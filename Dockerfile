@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y \
 # never uses the compatible fallback binaries bundled by the npm packages.
 RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
-       @agentclientprotocol/claude-agent-acp@0.64.0 \
+       @agentclientprotocol/claude-agent-acp@0.64.1 \
        @agentclientprotocol/codex-acp@1.1.9
 # libicu72: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-bookworm-slim
