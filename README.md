@@ -155,6 +155,8 @@ Compose deployment:
 
 ```bash
 export CODEG_HOST_HOME=/home/your-user
+# For an image built by your fork's GitHub Actions, set its GHCR image here.
+# export CODEG_IMAGE=ghcr.io/your-github-user/codeg:latest
 docker compose pull
 docker compose up -d
 ```
