@@ -2602,7 +2602,14 @@
         "moreFiles": "+{count} 个更多文件",
         "plan": "计划",
         "allowedActions": "允许的操作",
-        "targetMode": "目标模式：{mode}"
+        "targetMode": "目标模式：{mode}",
+        "optionGrants": "各选项将授予的权限",
+        "changeScopeSession": "本次会话",
+        "changeScopeProcess": "本次运行",
+        "changeScopeUser": "保存到用户设置",
+        "changeScopeProject": "保存到项目设置",
+        "changeScopeProjectLocal": "保存到本地项目设置",
+        "changeScopePersistent": "永久保存"
       },
       "questionDialog": {
         "title": "代理正在提问",
@@ -4136,6 +4143,7 @@
     "actionArchive": "归档",
     "actionUnarchive": "取消归档",
     "archiveAllDone": "全部归档",
+    "dropToStart": "松开即开始执行",
     "more": "更多",
     "errorView": "查看",
     "toastStartedAll": "已排队 {count} 个任务",

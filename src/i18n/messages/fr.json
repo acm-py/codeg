@@ -2602,7 +2602,14 @@
         "moreFiles": "+{count} fichiers supplémentaires",
         "plan": "Plan de travail",
         "allowedActions": "Actions autorisées",
-        "targetMode": "Mode cible : {mode}"
+        "targetMode": "Mode cible : {mode}",
+        "optionGrants": "Ce que chaque option accorde",
+        "changeScopeSession": "Cette session",
+        "changeScopeProcess": "Cette exécution",
+        "changeScopeUser": "Enregistré dans les paramètres utilisateur",
+        "changeScopeProject": "Enregistré dans les paramètres du projet",
+        "changeScopeProjectLocal": "Enregistré dans les paramètres locaux du projet",
+        "changeScopePersistent": "Enregistré définitivement"
       },
       "questionDialog": {
         "title": "L'agent pose une question",
@@ -4136,6 +4143,7 @@
     "actionArchive": "Archiver",
     "actionUnarchive": "Désarchiver",
     "archiveAllDone": "Tout archiver",
+    "dropToStart": "Relâchez pour lancer",
     "more": "Plus",
     "errorView": "Voir",
     "toastStartedAll": "{count} tâches mises en file",
