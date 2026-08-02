@@ -50,7 +50,7 @@ async fn run_git_version(git_path: &str) -> Result<GitDetectResult, AppCommandEr
 
 async fn detect_git_path() -> Option<String> {
     let preferred = crate::process::git_program();
-    if preferred != std::ffi::OsString::from("git") {
+    if preferred != "git" {
         return Some(preferred.to_string_lossy().into_owned());
     }
 

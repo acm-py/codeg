@@ -431,12 +431,8 @@ pub(crate) async fn resolve_npx_command(cmd: &str) -> Option<PathBuf> {
             // Do not fall back to an adapter installed on the host. The
             // container owns this ACP layer; only the underlying Agent binary
             // is supplied by the host.
-            if resolve_system_agent_binary(host_binary).is_none() {
-                return None;
-            }
-            if resolve_bundled_acp_node().is_none() {
-                return None;
-            }
+            resolve_system_agent_binary(host_binary)?;
+            resolve_bundled_acp_node()?;
             return resolve_bundled_acp_adapter(cmd);
         }
     }

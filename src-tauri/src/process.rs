@@ -269,7 +269,7 @@ where
 {
     if program.as_ref() == OsStr::new("git") {
         let resolved = git_program();
-        if resolved != OsString::from("git") {
+        if resolved != "git" {
             return resolved;
         }
     }
