@@ -58,7 +58,15 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
     let checks = match &meta.distribution {
-        AgentDistribution::Npx { node_required, .. } => check_npm_environment(*node_required).await,
+        AgentDistribution::Npx {
+            cmd, node_required, ..
+        } => {
+            if crate::process::uses_host_agents() {
+                check_host_command_environment(cmd).await
+            } else {
+                check_npm_environment(*node_required).await
+            }
+        }
         AgentDistribution::Binary {
             version,
             cmd,
@@ -69,7 +77,13 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
             uv_required,
             system_cmd,
             ..
-        } => check_uv_environment(*uv_required, *system_cmd).await,
+        } => {
+            if crate::process::uses_host_agents() {
+                check_host_uv_environment(*system_cmd).await
+            } else {
+                check_uv_environment(*uv_required, *system_cmd).await
+            }
+        }
     };
 
     let passed = checks
@@ -82,6 +96,53 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
         passed,
         checks,
     }
+}
+
+async fn check_host_command_environment(command: &str) -> Vec<CheckItem> {
+    let available = crate::commands::acp::resolve_npx_command(command)
+        .await
+        .is_some();
+    vec![CheckItem {
+        check_id: "host_agent_available".into(),
+        label: "Host agent".into(),
+        status: if available {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if available {
+            format!("ACP adapter and host command `{command}` are available")
+        } else {
+            format!(
+                "ACP adapter or host command `{command}` is unavailable; install the Agent on the host and ensure its bin and dependency directories are mounted"
+            )
+        },
+        fixes: vec![],
+    }]
+}
+
+async fn check_host_uv_environment(system_cmd: Option<(&str, &[&str])>) -> Vec<CheckItem> {
+    let command = system_cmd.map(|(command, _)| command).unwrap_or("agent");
+    let available = system_cmd
+        .map(|(command, _)| crate::commands::acp::resolve_command_on_path(command).is_some())
+        .unwrap_or(false);
+    vec![CheckItem {
+        check_id: "host_agent_available".into(),
+        label: "Host agent".into(),
+        status: if available {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        message: if available {
+            format!("Mounted host Agent command `{command}` is available")
+        } else {
+            format!(
+                "Host Agent command `{command}` is unavailable; install the Agent on the host and mount its bin and dependency directories"
+            )
+        },
+        fixes: vec![],
+    }]
 }
 
 async fn check_npm_environment(node_required: Option<&str>) -> Vec<CheckItem> {
@@ -298,6 +359,10 @@ async fn check_uv_environment(
     uv_required: Option<&str>,
     system_cmd: Option<(&str, &[&str])>,
 ) -> Vec<CheckItem> {
+    if crate::process::uses_host_agents() {
+        return check_host_uv_environment(system_cmd).await;
+    }
+
     // Primary: the `uv` tool runner (uvx) fetches + launches the agent package.
     if let Some(uvx_path) = crate::commands::acp::resolve_uvx_command() {
         let version = run_uv_version(&uvx_path).await;
@@ -441,6 +506,28 @@ async fn check_binary_environment(
         }
     };
     checks.push(platform_check);
+
+    if crate::process::uses_host_agents() {
+        let system_ready = crate::commands::acp::resolve_system_agent_binary(cmd).is_some();
+        checks.push(CheckItem {
+            check_id: "host_agent_available".into(),
+            label: "Host agent".into(),
+            status: if system_ready {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            },
+            message: if system_ready {
+                format!("Mounted host command `{cmd}` is available")
+            } else {
+                format!(
+                    "{cmd} is not available in the mounted host paths; install it on the host and mount its bin directory"
+                )
+            },
+            fixes: vec![],
+        });
+        return checks;
+    }
 
     // Check binary cache.
     //

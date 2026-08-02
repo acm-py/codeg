@@ -149,11 +149,19 @@ irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
 $env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
-**Docker** — the same server, in one container:
+**Docker** — by default, ACP runs in the container while Agent CLIs and
+configuration are read from the host. Set the host home path and start the
+Compose deployment:
 
 ```bash
-docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
+export CODEG_HOST_HOME=/home/your-user
+docker compose pull
+docker compose up -d
 ```
+
+Agents missing from the host stay unavailable and disabled. The host and
+container should use the same Unix architecture; add matching project mounts
+for repositories outside the host home directory.
 
 **Mobile** — install the [iOS app](https://apps.apple.com/app/codeg-client/id6785199071) or the [Android APK](https://github.com/xintaofei/codeg-android/releases/latest), then point it at the **Web Service** of your desktop app or at your own `codeg-server`: URL, token, done. Pairing steps in [Mobile apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
 

@@ -16,6 +16,162 @@ const EXEC_BUSY_RETRY_BUDGET: Duration = Duration::from_secs(1);
 /// Upper bound on the wait between `ETXTBSY` retries.
 const EXEC_BUSY_MAX_BACKOFF: Duration = Duration::from_millis(25);
 
+/// Selects where ACP agent runtimes are expected to be installed.
+///
+/// `container` preserves the normal Codeg behaviour: the server may use its
+/// own caches and the installation actions may provision runtimes locally.
+/// `host` is intended for Docker deployments. In that mode Agent executables,
+/// runtimes, dependencies, and configuration are supplied by host directories
+/// mounted into the container; Codeg never installs Agent packages or uses
+/// the container's `/data` cache as an Agent runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRuntime {
+    Container,
+    Host,
+}
+
+pub(crate) fn agent_runtime_from_value(value: Option<&str>) -> AgentRuntime {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("host") | Some("host-mounted") | Some("host_mounted") => AgentRuntime::Host,
+        _ => AgentRuntime::Container,
+    }
+}
+
+/// Resolve the agent runtime policy once per call from the process environment.
+///
+/// The default remains container-local so desktop and standalone server
+/// deployments are unchanged. Docker sets this to `host` explicitly.
+pub fn agent_runtime() -> AgentRuntime {
+    agent_runtime_from_value(std::env::var("CODEG_AGENT_RUNTIME").ok().as_deref())
+}
+
+pub fn uses_host_agents() -> bool {
+    agent_runtime() == AgentRuntime::Host
+}
+
+/// Host mode must not accidentally accept an Agent command that happens to be
+/// installed in the Codeg image itself. The compose deployment exposes host
+/// roots under `/host`, keeps the host home at its original absolute path, and
+/// may add extra roots through the explicit path variables.
+pub(crate) fn is_host_agent_path(path: &std::path::Path) -> bool {
+    if !uses_host_agents() {
+        return true;
+    }
+
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let mut roots = vec![PathBuf::from("/host")];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home);
+    }
+    for variable in [
+        "CODEG_AGENT_PATH",
+        "CODEG_HOST_AGENT_PATH",
+        "CODEG_HOST_BREW_HOME",
+    ] {
+        if let Some(raw) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+            roots.extend(
+                raw.to_string_lossy()
+                    .split(separator)
+                    .filter(|dir| !dir.trim().is_empty())
+                    .map(PathBuf::from),
+            );
+        }
+    }
+
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+/// Prepend Agent directories to PATH before any async work starts.
+///
+/// Docker host-agent mode is deliberately filesystem-only: the container
+/// discovers commands in mounted host directories and executes them in its own
+/// process namespace. The compose file mounts host system directories under
+/// `/host`, while the host home directory keeps its original absolute path so
+/// Agent config and project paths continue to resolve normally.
+pub fn ensure_agent_path_in_path() {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let mut dirs = Vec::new();
+
+    for variable in ["CODEG_AGENT_PATH", "CODEG_HOST_AGENT_PATH"] {
+        if let Some(raw) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+            dirs.extend(
+                raw.to_string_lossy()
+                    .split(separator)
+                    .filter(|dir| !dir.trim().is_empty())
+                    .map(PathBuf::from),
+            );
+        }
+    }
+
+    if let Some(raw) = std::env::var_os("CODEG_HOST_BREW_HOME").filter(|value| !value.is_empty()) {
+        dirs.push(PathBuf::from(raw).join("bin"));
+    }
+
+    if uses_host_agents() {
+        dirs.extend(host_agent_path_candidates());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for dir in dirs.into_iter().filter(|dir| dir.is_dir()).rev() {
+        let key = dir.to_string_lossy().into_owned();
+        if seen.insert(key.clone()) {
+            prepend_to_path(&dir);
+        }
+    }
+}
+
+/// Return the directories used by the Docker compose deployment to expose
+/// host-installed Agent commands. The list is intentionally conservative and
+/// read-only: missing mounts are ignored, and no host files are copied into
+/// the image or installed by Codeg.
+fn host_agent_path_candidates() -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    let mut candidates = Vec::new();
+
+    if let Some(home) = home.as_deref() {
+        for relative in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".codeg/npm-global/bin",
+            ".bun/bin",
+            ".volta/bin",
+            ".asdf/shims",
+            ".asdf/bin",
+            ".local/share/pnpm",
+            ".cargo/bin",
+        ] {
+            candidates.push(home.join(relative));
+        }
+
+        // This also discovers nvm/fnm/mise/asdf-managed Node bins, including
+        // the newest installed nvm version. It is needed for npm shims whose
+        // shebang is `/usr/bin/env node`.
+        candidates.extend(node_bin_dir_candidates(Some(home)));
+    }
+
+    // These are the fixed destinations used by docker-compose.yml. Keeping
+    // them under /host avoids overlaying the container's own /usr tree while
+    // still allowing host Node/Python/uv shims to resolve their dependencies.
+    for path in [
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/host/usr/local/bin",
+        "/host/usr/bin",
+        "/host/bin",
+        "/host/opt/homebrew/bin",
+        "/host/opt/local/bin",
+        "/host/snap/bin",
+    ] {
+        candidates.push(PathBuf::from(path));
+    }
+
+    candidates
+}
+
 pub fn configure_std_command(command: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
@@ -653,9 +809,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_lines_lossy, spawn_retrying_exec_busy, spawn_retrying_exec_busy_within};
+    use super::{
+        agent_runtime_from_value, collect_lines_lossy, spawn_retrying_exec_busy,
+        spawn_retrying_exec_busy_within, AgentRuntime,
+    };
     use std::io::Cursor;
     use std::time::Duration;
+
+    #[test]
+    fn agent_runtime_defaults_to_container() {
+        assert_eq!(agent_runtime_from_value(None), AgentRuntime::Container);
+        assert_eq!(agent_runtime_from_value(Some("unknown")), AgentRuntime::Container);
+    }
+
+    #[test]
+    fn agent_runtime_accepts_host_aliases() {
+        for value in ["host", "HOST", "host-mounted", "host_mounted"] {
+            assert_eq!(agent_runtime_from_value(Some(value)), AgentRuntime::Host);
+        }
+    }
 
     #[tokio::test]
     async fn collect_lines_lossy_preserves_lines_around_invalid_utf8() {

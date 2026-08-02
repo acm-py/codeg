@@ -32,6 +32,13 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libicu72 \
     && rm -rf /var/lib/apt/lists/*
+# These packages are ACP transport adapters only. Their underlying Claude Code
+# and Codex executables are selected from host mounts at runtime; host mode
+# never uses the compatible fallback binaries bundled by the npm packages.
+RUN mkdir -p /opt/codeg/acp \
+    && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
+       @agentclientprotocol/claude-agent-acp@0.63.0 \
+       @agentclientprotocol/codex-acp@1.1.7
 # libicu72: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-bookworm-slim
 # bundles Node's own ICU statically and so does NOT install system libicu — without
@@ -49,6 +56,13 @@ ENV CODEG_DATA_DIR=/data
 ENV CODEG_PORT=3080
 ENV CODEG_HOST=0.0.0.0
 ENV SHELL=/bin/bash
+# Docker defaults to host-agent mode. Agent processes are launched directly
+# inside this container from host directories mounted by docker-compose; this
+# image installs only the ACP adapters and does not install Agent body
+# packages, Python packages, or Agent binaries.
+ENV HOME=/root
+ENV CODEG_AGENT_RUNTIME=host
+ENV CODEG_ACP_ADAPTER_DIR=/opt/codeg/acp
 # In-place self-update markers: tells the running server it is a container
 # (for the post-upgrade "also pull the image" hint) and how long the
 # supervisor waits before relaunching the worker after an upgrade.

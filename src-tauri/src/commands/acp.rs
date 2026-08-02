@@ -33,6 +33,7 @@ const ACP_AGENTS_UPDATED_EVENT: &str = "app://acp-agents-updated";
 const NPM_PREFIX_TIMEOUT: Duration = Duration::from_millis(1500);
 
 static NPM_GLOBAL_PREFIX_CACHE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
+const DEFAULT_ACP_ADAPTER_DIR: &str = "/opt/codeg/acp";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -198,7 +199,22 @@ pub(crate) async fn is_cmd_available(cmd: &str) -> bool {
 }
 
 pub(crate) fn resolve_command_on_path(cmd: &str) -> Option<PathBuf> {
-    which::which(cmd).ok()
+    let path = which::which(cmd).ok()?;
+    crate::process::is_host_agent_path(&path).then_some(path)
+}
+
+fn host_agent_runtime_error() -> AcpError {
+    AcpError::protocol(
+        "agent installation is disabled in host runtime; install the Agent executable on the host and recreate the container so its bundled ACP adapter can use it",
+    )
+}
+
+fn ensure_agent_installation_allowed() -> Result<(), AcpError> {
+    if crate::process::uses_host_agents() {
+        Err(host_agent_runtime_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Resolve a binary agent's user-installed CLI (e.g. `cursor-agent` from
@@ -221,6 +237,29 @@ pub(crate) fn resolve_system_agent_binary(cmd: &str) -> Option<PathBuf> {
     cand.is_file().then_some(cand)
 }
 
+/// ACP adapters for the two agents that expose an explicit external-runtime
+/// hook. The adapter stays in the container; the actual Agent CLI stays on the
+/// host and is passed through the adapter's documented environment variable.
+pub(crate) fn host_agent_binary_for_acp_command(cmd: &str) -> Option<&'static str> {
+    match cmd {
+        "claude-agent-acp" => Some("claude"),
+        "codex-acp" => Some("codex"),
+        _ => None,
+    }
+}
+
+pub(crate) fn resolve_bundled_acp_adapter(cmd: &str) -> Option<PathBuf> {
+    let root = std::env::var_os("CODEG_ACP_ADAPTER_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ACP_ADAPTER_DIR));
+    [
+        root.join("node_modules").join(".bin").join(cmd),
+        root.join("bin").join(cmd),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
 /// Resolve the `uvx` (uv tool runner) executable used to launch Python ACP
 /// agents (e.g. Hermes). Checks PATH first (respecting a user's own `uv`),
 /// then codeg's managed uv cache, then the common install locations the
@@ -228,6 +267,12 @@ pub(crate) fn resolve_system_agent_binary(cmd: &str) -> Option<PathBuf> {
 pub(crate) fn resolve_uvx_command() -> Option<PathBuf> {
     if let Some(path) = resolve_command_on_path("uvx") {
         return Some(path);
+    }
+    // Host mode is filesystem-only. Never use /data's managed uv cache in
+    // Docker, because that would silently reintroduce a container-owned
+    // runtime for an Agent the host did not provide.
+    if crate::process::uses_host_agents() {
+        return None;
     }
     if let Some(path) = crate::acp::binary_cache::find_cached_uv_tool("uvx") {
         return Some(path);
@@ -251,6 +296,11 @@ pub(crate) fn resolve_uvx_command() -> Option<PathBuf> {
 /// marker is deliberately NOT consulted here — it records what was fetched (for
 /// the installed-version badge), not whether the launcher is currently present.
 fn uvx_agent_launchable(system_cmd: Option<(&'static str, &'static [&'static str])>) -> bool {
+    if crate::process::uses_host_agents() {
+        return system_cmd
+            .map(|(c, _)| resolve_command_on_path(c).is_some())
+            .unwrap_or(false);
+    }
     resolve_uvx_command().is_some()
         || system_cmd
             .map(|(c, _)| resolve_command_on_path(c).is_some())
@@ -329,6 +379,17 @@ async fn prewarm_uvx_agent(
 }
 
 pub(crate) async fn resolve_npx_command(cmd: &str) -> Option<PathBuf> {
+    if crate::process::uses_host_agents() {
+        if let Some(host_binary) = host_agent_binary_for_acp_command(cmd) {
+            // Do not fall back to an adapter installed on the host. The
+            // container owns this ACP layer; only the underlying Agent binary
+            // is supplied by the host.
+            if resolve_system_agent_binary(host_binary).is_none() {
+                return None;
+            }
+            return resolve_bundled_acp_adapter(cmd);
+        }
+    }
     if let Some(path) = resolve_command_on_path(cmd) {
         return Some(path);
     }
@@ -347,7 +408,12 @@ impl NpxCommandResolver {
             return cached.clone();
         }
 
-        let resolved = if let Some(path) = resolve_command_on_path(cmd) {
+        let resolved = if crate::process::uses_host_agents() {
+            // Claude/Codex use the adapter bundled in the container while the
+            // other Npx entries resolve their complete ACP command from host
+            // mounts. Keep this path identical to the connect/preflight path.
+            resolve_npx_command(cmd).await
+        } else if let Some(path) = resolve_command_on_path(cmd) {
             Some(path)
         } else {
             let prefix = if let Some(prefix) = &self.request_npm_prefix {
@@ -394,7 +460,7 @@ where
 }
 
 async fn resolve_current_npm_global_prefix() -> Option<PathBuf> {
-    let npm_path = which::which("npm").ok()?;
+    let npm_path = resolve_command_on_path("npm")?;
     let mut cmd = crate::process::tokio_command(npm_path);
     cmd.arg("prefix").arg("-g").kill_on_drop(true);
     let output = tokio::time::timeout(NPM_PREFIX_TIMEOUT, cmd.output())
@@ -437,9 +503,9 @@ fn resolve_npx_command_from_npm_prefix(cmd: &str, prefix: &Path) -> Option<PathB
     #[cfg(not(windows))]
     let candidates = [bin_dir.join(cmd)];
 
-    candidates
-        .into_iter()
-        .find(|path| is_npm_command_candidate(path))
+    candidates.into_iter().find(|path| {
+        is_npm_command_candidate(path) && crate::process::is_host_agent_path(path)
+    })
 }
 
 #[cfg(windows)]
@@ -496,9 +562,12 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
             // surface "upgrade available" for stale caches via its own
             // version-badge flow. A user-installed CLI also counts, the same
             // fallback `build_agent` launches with.
-            let launchable = binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
-                .is_some()
-                || resolve_system_agent_binary(cmd).is_some();
+            let launchable = if crate::process::uses_host_agents() {
+                resolve_system_agent_binary(cmd).is_some()
+            } else {
+                binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?.is_some()
+                    || resolve_system_agent_binary(cmd).is_some()
+            };
             if !launchable {
                 // INVARIANT: see note above — "is not installed" is a
                 // stable substring the frontend matches against.
@@ -510,18 +579,27 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
             Ok(())
         }
         registry::AgentDistribution::Uvx { system_cmd, .. } => {
-            // Launchable when uvx is resolvable (codeg auto-provisions it on
-            // install, so this holds post-prepare) or the agent's own CLI is on
-            // PATH. Kept consistent with the Settings status/list paths via the
-            // shared helper, so connect and the UI never disagree on readiness.
-            if uvx_agent_launchable(system_cmd) {
-                Ok(())
-            } else {
-                Err(AcpError::SdkNotInstalled(format!(
-                    "{} is not installed. Please install it in Agent Settings.",
+            // Host mode only accepts the Agent's own host CLI. Merely mounting
+            // uvx must not make an absent Agent look installed or trigger a
+            // package download from the container.
+            if crate::process::uses_host_agents() {
+                if let Some((command, _)) = system_cmd {
+                    if resolve_command_on_path(command).is_some() {
+                        return Ok(());
+                    }
+                }
+                return Err(AcpError::SdkNotInstalled(format!(
+                    "{} is not installed on the host. Install it on the host and mount its executable and dependencies.",
                     meta.name
-                )))
+                )));
             }
+            if uvx_agent_launchable(system_cmd) {
+                return Ok(());
+            }
+            Err(AcpError::SdkNotInstalled(format!(
+                "{} is not installed. Please install it in Agent Settings.",
+                meta.name
+            )))
         }
     }
 }
@@ -536,7 +614,7 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
 /// `pub(crate)` so env diagnostics can report the installed version it sees
 /// (which covers both prefixes, unlike the connect-gate `resolve_npx_command`).
 pub(crate) async fn detect_npm_global_version(package_name: &str) -> Option<String> {
-    let npm_path = which::which("npm").ok()?;
+    let npm_path = resolve_command_on_path("npm")?;
 
     // Try the default global prefix first.
     if let Some(v) = npm_list_version(&npm_path, package_name, None).await {
@@ -602,9 +680,13 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
             version
         }
         registry::AgentDistribution::Binary { cmd, dir_entry, .. } => {
-            let cached = binary_cache::detect_installed_version(agent_type, cmd)
-                .ok()
-                .flatten();
+            let cached = if crate::process::uses_host_agents() {
+                None
+            } else {
+                binary_cache::detect_installed_version(agent_type, cmd)
+                    .ok()
+                    .flatten()
+            };
             if cached.is_some() {
                 return cached;
             }
@@ -622,7 +704,11 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
         registry::AgentDistribution::Uvx {
             cmd, system_cmd, ..
         } => {
-            let mut version = binary_cache::uvx_prepared_version(agent_type);
+            let mut version = if crate::process::uses_host_agents() {
+                None
+            } else {
+                binary_cache::uvx_prepared_version(agent_type)
+            };
             // No prepared marker: probe the package's console script on PATH,
             // then the system-fallback command a launch would actually use
             // (Hermes: `hermes-acp` from the uvx package vs a pipx `hermes`).
@@ -8605,9 +8691,13 @@ pub(crate) async fn acp_get_agent_status_core(
     let (available, installed_version) = match &meta.distribution {
         registry::AgentDistribution::Npx { cmd, package, .. } => {
             let resolved = resolve_npx_command(cmd).await;
-            let mut version = resolved
-                .as_ref()
-                .and_then(|_| setting.as_ref().and_then(|m| m.installed_version.clone()));
+            let mut version = if crate::process::uses_host_agents() {
+                None
+            } else {
+                resolved
+                    .as_ref()
+                    .and_then(|_| setting.as_ref().and_then(|m| m.installed_version.clone()))
+            };
             // An agent the user installed themselves (npm -g, bun, brew, …)
             // resolves but has no managed install record — probe the system
             // install so it reads as installed rather than demanding a
@@ -8618,7 +8708,10 @@ pub(crate) async fn acp_get_agent_status_core(
                     version = system_probed_version(agent_type, bin, Some(package)).await;
                 }
             }
-            (true, version)
+            if crate::process::uses_host_agents() && resolved.is_some() && version.is_none() {
+                version = Some("host".to_string());
+            }
+            (resolved.is_some(), version)
         }
         registry::AgentDistribution::Binary {
             platforms,
@@ -8626,9 +8719,13 @@ pub(crate) async fn acp_get_agent_status_core(
             dir_entry,
             ..
         } => {
-            let mut detected = binary_cache::detect_installed_version(agent_type, cmd)
-                .ok()
-                .flatten();
+            let mut detected = if crate::process::uses_host_agents() {
+                None
+            } else {
+                binary_cache::detect_installed_version(agent_type, cmd)
+                    .ok()
+                    .flatten()
+            };
             // A system install is launchable via the connect path's PATH
             // fallback, and the frontend gates connect on a non-null
             // installed_version — report the probed system version so such an
@@ -8642,12 +8739,25 @@ pub(crate) async fn acp_get_agent_status_core(
                     detected = system_probed_version(agent_type, &bin, None).await;
                 }
             }
-            (platforms.iter().any(|p| p.platform == platform), detected)
+            let supported = platforms.iter().any(|p| p.platform == platform);
+            let available = if crate::process::uses_host_agents() {
+                supported && resolve_system_agent_binary(cmd).is_some()
+            } else {
+                supported
+            };
+            if crate::process::uses_host_agents() && available && detected.is_none() {
+                detected = Some("host".to_string());
+            }
+            (available, detected)
         }
         registry::AgentDistribution::Uvx {
             cmd, system_cmd, ..
         } => {
-            let mut version = binary_cache::uvx_prepared_version(agent_type);
+            let mut version = if crate::process::uses_host_agents() {
+                None
+            } else {
+                binary_cache::uvx_prepared_version(agent_type)
+            };
             // Same story as npx: a CLI installed by the user (pipx, uv tool
             // install, …) is a real install. Probe the package's console
             // script first, then the system-fallback command a launch would
@@ -8659,14 +8769,21 @@ pub(crate) async fn acp_get_agent_status_core(
                     version = system_probed_version(agent_type, &bin, None).await;
                 }
             }
-            (uvx_agent_launchable(*system_cmd), version)
+            let available = uvx_agent_launchable(*system_cmd);
+            if crate::process::uses_host_agents() && available && version.is_none() {
+                version = Some("host".to_string());
+            }
+            (available, version)
         }
     };
 
+    let enabled = setting
+        .map(|m| m.enabled)
+        .unwrap_or(!crate::process::uses_host_agents());
     Ok(crate::acp::types::AcpAgentStatus {
         agent_type,
         available,
-        enabled: setting.map(|m| m.enabled).unwrap_or(true),
+        enabled: enabled && (!crate::process::uses_host_agents() || available),
         installed_version,
     })
 }
@@ -8714,9 +8831,13 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 // global prefix at most once, then reuses the result across
                 // all NPX agents in the loop.
                 let resolved = npx_resolver.resolve_for_list(cmd).await;
-                let mut version = resolved
-                    .as_ref()
-                    .and_then(|_| setting.and_then(|m| m.installed_version.clone()));
+                let mut version = if crate::process::uses_host_agents() {
+                    None
+                } else {
+                    resolved
+                        .as_ref()
+                        .and_then(|_| setting.and_then(|m| m.installed_version.clone()))
+                };
                 // Mirror the status path: an agent's own system install
                 // counts as installed (per-agent cached probe).
                 if version.is_none() {
@@ -8724,7 +8845,10 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                         version = system_probed_version(agent_type, bin, Some(package)).await;
                     }
                 }
-                (true, "npx", version)
+                if crate::process::uses_host_agents() && resolved.is_some() && version.is_none() {
+                    version = Some("host".to_string());
+                }
+                (resolved.is_some(), "npx", version)
             }
             registry::AgentDistribution::Binary {
                 platforms,
@@ -8732,9 +8856,13 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 dir_entry,
                 ..
             } => {
-                let mut detected = binary_cache::detect_installed_version(agent_type, cmd)
-                    .ok()
-                    .flatten();
+                let mut detected = if crate::process::uses_host_agents() {
+                    None
+                } else {
+                    binary_cache::detect_installed_version(agent_type, cmd)
+                        .ok()
+                        .flatten()
+                };
                 // Mirror the status path: a system install counts as installed
                 // (cached probes — no per-list subprocess after the first
                 // call). Without this, the list would also persist
@@ -8746,16 +8874,25 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                         detected = system_probed_version(agent_type, &bin, None).await;
                     }
                 }
-                (
-                    platforms.iter().any(|p| p.platform == platform),
-                    "binary",
-                    detected,
-                )
+                let supported = platforms.iter().any(|p| p.platform == platform);
+                let available = if crate::process::uses_host_agents() {
+                    supported && resolve_system_agent_binary(cmd).is_some()
+                } else {
+                    supported
+                };
+                if crate::process::uses_host_agents() && available && detected.is_none() {
+                    detected = Some("host".to_string());
+                }
+                (available, "binary", detected)
             }
             registry::AgentDistribution::Uvx {
                 cmd, system_cmd, ..
             } => {
-                let mut version = binary_cache::uvx_prepared_version(agent_type);
+                let mut version = if crate::process::uses_host_agents() {
+                    None
+                } else {
+                    binary_cache::uvx_prepared_version(agent_type)
+                };
                 if version.is_none() {
                     let bin = resolve_command_on_path(cmd)
                         .or_else(|| (*system_cmd).and_then(|(c, _)| resolve_command_on_path(c)));
@@ -8763,7 +8900,11 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                         version = system_probed_version(agent_type, &bin, None).await;
                     }
                 }
-                (uvx_agent_launchable(*system_cmd), "uvx", version)
+                let available = uvx_agent_launchable(*system_cmd);
+                if crate::process::uses_host_agents() && available && version.is_none() {
+                    version = Some("host".to_string());
+                }
+                (available, "uvx", version)
             }
         };
 
@@ -8797,7 +8938,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         }
         let sort_order = setting.map(|m| m.sort_order).unwrap_or(idx as i32);
         // Persist detected version to DB for binary agents (npx written during install/upgrade)
-        if dist_type == "binary" {
+        if dist_type == "binary" && !crate::process::uses_host_agents() {
             let _ = agent_setting_service::set_installed_version(
                 &db.conn,
                 agent_type,
@@ -8879,6 +9020,9 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             None
         };
 
+        let enabled = setting
+            .map(|m| m.enabled)
+            .unwrap_or(!crate::process::uses_host_agents());
         agents.push(AcpAgentInfo {
             agent_type,
             registry_id: registry::registry_id_for(agent_type).to_string(),
@@ -8891,7 +9035,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 .custom_id()
                 .and_then(crate::acp::custom_registry::source_of)
                 .map(|s| s.as_str().to_string()),
-            enabled: setting.map(|m| m.enabled).unwrap_or(true),
+            enabled: enabled && (!crate::process::uses_host_agents() || available),
             sort_order,
             installed_version: local_installed_version,
             env,
@@ -8940,6 +9084,7 @@ pub async fn acp_list_agents(
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_clear_binary_cache(agent_type: AgentType) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     let meta = registry::get_agent_meta(agent_type);
     if matches!(
         meta.distribution,
@@ -9859,6 +10004,7 @@ pub(crate) async fn acp_download_agent_binary_core(
     task_id: String,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let meta = registry::get_agent_meta(agent_type);
@@ -9982,6 +10128,7 @@ pub(crate) async fn acp_install_uv_tool_core(
     task_id: String,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let emitter_clone = emitter.clone();
@@ -10107,6 +10254,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
     db: &AppDatabase,
     emitter: &EventEmitter,
 ) -> Result<String, AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let meta = registry::get_agent_meta(agent_type);
@@ -10300,6 +10448,7 @@ pub(crate) async fn acp_uninstall_agent_core(
     db: &AppDatabase,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let meta = registry::get_agent_meta(agent_type);
@@ -10379,6 +10528,7 @@ pub(crate) async fn acp_install_pi_binary_core(
     task_id: String,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
 
     let result =
@@ -10419,6 +10569,7 @@ pub(crate) async fn acp_uninstall_pi_binary_core(
     task_id: String,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
+    ensure_agent_installation_allowed()?;
     emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
     emit_agent_install_event(
         emitter,
