@@ -595,6 +595,11 @@ jobs:
             target: "x86_64-pc-windows-msvc"
             artifact: "codeg-server-windows-x64"
     runs-on: ${{ matrix.runner }}
+    env:
+      # Forks that only publish Docker images may not have the updater signing
+      # key. Keep the server artifact usable for Docker while preserving
+      # signed release uploads when the key is configured.
+      CODEG_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -738,7 +743,7 @@ jobs:
       # `update::verify` module verifies this signature against the embedded
       # public key before installing — see src-tauri/src/update/verify.rs.
       - name: Sign and checksum bundle (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && env.CODEG_TAURI_SIGNING_PRIVATE_KEY != ''
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -749,7 +754,7 @@ jobs:
           ( cd dist && shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256" )
 
       - name: Sign and checksum bundle (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.CODEG_TAURI_SIGNING_PRIVATE_KEY != ''
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -763,7 +768,7 @@ jobs:
           "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii "dist/${{ matrix.artifact }}.zip.sha256"
 
       - name: Upload to release (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && env.CODEG_TAURI_SIGNING_PRIVATE_KEY != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -774,7 +779,7 @@ jobs:
             --clobber
 
       - name: Upload to release (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.CODEG_TAURI_SIGNING_PRIVATE_KEY != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "dist/${{ matrix.artifact }}.zip" "dist/${{ matrix.artifact }}.zip.sig" "dist/${{ matrix.artifact }}.zip.sha256" --clobber

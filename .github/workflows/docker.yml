@@ -1,0 +1,220 @@
+name: Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: GHCR image tag to publish
+        required: false
+        default: latest
+        type: string
+
+env:
+  RUST_BACKTRACE: short
+  HUSKY: 0
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-frontend:
+    name: Build frontend
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Upload static frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeg-web
+          path: out
+          retention-days: 1
+
+  build-server:
+    needs: build-frontend
+    name: Build server ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            target: x86_64-unknown-linux-gnu
+            artifact: codeg-server-linux-x64
+          - name: Linux arm64
+            target: aarch64-unknown-linux-gnu
+            artifact: codeg-server-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          shared-key: docker-server-${{ matrix.target }}
+
+      - name: Install Linux arm64 cross compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cat > /tmp/sources.list << 'EOF'
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+          EOF
+          sudo mv /etc/apt/sources.list /etc/apt/sources.list.default
+          sudo mv /tmp/sources.list /etc/apt/sources.list
+
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y --only-upgrade libssl3
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libssl-dev:arm64
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc-ar"
+          } >> "$GITHUB_ENV"
+
+      - name: Download static frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-web
+          path: out
+
+      - name: Build server and ACP companion
+        working-directory: src-tauri
+        run: |
+          cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
+          cargo build --release --bin codeg-mcp --no-default-features --target ${{ matrix.target }}
+
+      - name: Package server artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist/${{ matrix.artifact }}
+          cp src-tauri/target/${{ matrix.target }}/release/codeg-server dist/${{ matrix.artifact }}/
+          cp src-tauri/target/${{ matrix.target }}/release/codeg-mcp dist/${{ matrix.artifact }}/
+          chmod +x dist/${{ matrix.artifact }}/codeg-server dist/${{ matrix.artifact }}/codeg-mcp
+          cp -r out dist/${{ matrix.artifact }}/web
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 1
+
+  build-docker:
+    needs:
+      - build-frontend
+      - build-server
+    name: Build and push Docker image
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux x64 server artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-server-linux-x64
+          path: artifacts/linux-x64
+
+      - name: Download Linux arm64 server artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-server-linux-arm64
+          path: artifacts/linux-arm64
+
+      - name: Prepare Docker build context
+        run: |
+          set -euo pipefail
+          mkdir -p dist/amd64 dist/arm64
+          cp artifacts/linux-x64/codeg-server dist/amd64/codeg-server
+          cp artifacts/linux-x64/codeg-mcp dist/amd64/codeg-mcp
+          cp artifacts/linux-arm64/codeg-server dist/arm64/codeg-server
+          cp artifacts/linux-arm64/codeg-mcp dist/arm64/codeg-mcp
+          cp -r artifacts/linux-x64/web dist/web
+          chmod +x dist/amd64/codeg-server dist/amd64/codeg-mcp \
+                   dist/arm64/codeg-server dist/arm64/codeg-mcp
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image tag
+        id: image
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        shell: bash
+        run: |
+          image_tag="${REQUESTED_TAG:-latest}"
+          if [[ ! "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker image tag: $image_tag"
+            exit 1
+          fi
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "ghcr.io/${GITHUB_REPOSITORY}:${image_tag}" >> "$GITHUB_OUTPUT"
+          if [[ "$image_tag" != "latest" ]]; then
+            echo "ghcr.io/${GITHUB_REPOSITORY}:latest" >> "$GITHUB_OUTPUT"
+          fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ci
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
