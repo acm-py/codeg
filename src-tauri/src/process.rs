@@ -267,6 +267,13 @@ pub fn normalized_program<S>(program: S) -> OsString
 where
     S: AsRef<OsStr>,
 {
+    if program.as_ref() == OsStr::new("git") {
+        let resolved = git_program();
+        if resolved != OsString::from("git") {
+            return resolved;
+        }
+    }
+
     #[cfg(windows)]
     {
         if let Some(resolved) = resolve_windows_program(program.as_ref()) {
@@ -275,6 +282,26 @@ where
     }
 
     program.as_ref().to_os_string()
+}
+
+/// Resolve Git to the container copy in host-Agent mode.
+///
+/// The Docker deployment mounts host installation roots under `/host` and
+/// prepends them to PATH so host Agents and their dependencies are discoverable.
+/// That also makes a mounted host `/usr/bin/git` win over the image's Git; the
+/// host binary may require a newer glibc than the container provides. Git is a
+/// Codeg-owned tool, so keep its executable inside the container.
+pub fn git_program() -> OsString {
+    #[cfg(unix)]
+    if uses_host_agents() {
+        for path in ["/usr/bin/git", "/bin/git"] {
+            if std::path::Path::new(path).is_file() {
+                return OsString::from(path);
+            }
+        }
+    }
+
+    OsString::from("git")
 }
 
 pub fn tokio_command<S>(program: S) -> tokio::process::Command
