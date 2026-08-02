@@ -153,6 +153,8 @@ $env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 
 ```bash
 export CODEG_HOST_HOME=/home/your-user
+# 如果使用 fork 的 GitHub Actions 镜像，请设置为你的 GHCR 镜像地址：
+# export CODEG_IMAGE=ghcr.io/your-github-user/codeg:latest
 docker compose pull
 docker compose up -d
 ```
