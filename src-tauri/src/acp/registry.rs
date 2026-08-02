@@ -205,6 +205,103 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
     }
 }
 
+/// The vendor CLI wrapped by a codeg entry that is really a THIRD-PARTY ACP
+/// *adapter*.
+///
+/// Ten of the twelve built-ins distribute the vendor's own CLI, so a user's
+/// existing global install is found by the launch gate as-is. Claude Code and
+/// Codex are the exceptions: neither `claude` nor `codex` speaks ACP, so codeg
+/// installs a separate adapter package (`claude-agent-acp` / `codex-acp`,
+/// maintained by the Agent Client Protocol org) whose command name has nothing
+/// to do with the vendor CLI's. That mismatch is the single most reported
+/// confusion ("I have claude installed, why does codeg say it isn't?"), so
+/// preflight and diagnostics probe the vendor CLI too and explain the split.
+#[derive(Debug, Clone, Copy)]
+pub struct AcpAdapterRelation {
+    /// The vendor CLI users install themselves, e.g. "claude".
+    pub native_cmd: &'static str,
+    /// Display name for that CLI, e.g. "Claude Code CLI".
+    pub native_label: &'static str,
+    /// Config/credential dir BOTH the vendor CLI and the adapter read, so
+    /// installing the adapter needs no second login.
+    pub shared_config_dir: &'static str,
+    /// Home-relative dirs the vendor's own installers use that a GUI app's PATH
+    /// commonly lacks. Probed after PATH and the npm global prefix.
+    pub extra_dirs: &'static [&'static str],
+    /// Where the "learn more" action points.
+    pub docs_url: &'static str,
+}
+
+/// Adapter relation for an agent, or `None` when codeg's entry IS the vendor's
+/// own CLI (every agent except these two).
+///
+/// Adding an entry here changes what preflight/diagnostics report — keep the
+/// `acp_adapter_relation_covers_only_wrapper_agents` test in sync.
+pub fn acp_adapter_relation(agent_type: AgentType) -> Option<AcpAdapterRelation> {
+    match agent_type {
+        AgentType::ClaudeCode => Some(AcpAdapterRelation {
+            native_cmd: "claude",
+            native_label: "Claude Code CLI",
+            shared_config_dir: "~/.claude",
+            // The native installer targets ~/.local/bin; older builds used
+            // ~/.claude/local.
+            extra_dirs: &[".local/bin", ".claude/local"],
+            docs_url: ACP_ADAPTER_DOCS_URL,
+        }),
+        AgentType::Codex => Some(AcpAdapterRelation {
+            native_cmd: "codex",
+            native_label: "Codex CLI",
+            shared_config_dir: "~/.codex",
+            extra_dirs: &[".local/bin"],
+            docs_url: ACP_ADAPTER_DOCS_URL,
+        }),
+        _ => None,
+    }
+}
+
+/// Docs anchor explaining the adapter/vendor-CLI split. The zh mirror carries
+/// the same explicit `{#acp-adapters}` anchor.
+const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agents#acp-adapters";
+
+/// Minimum adapter version whose `_session/steering` honors the
+/// `_meta.steering.idleBehavior = "promptRequired"` opt-in — one of the three
+/// gates for codeg's NATIVE live-feedback push channel (synthesized into
+/// `SessionState.native_steering_available` at initialize; see
+/// `connection.rs::init_advertises_steering`).
+///
+/// `None` means "never steer natively" even when the adapter advertises
+/// `_meta.steering.supported`: an adapter that ignores the opt-in falls back
+/// to `startedNewTurn` on the turn-end race — a detached turn no host request
+/// owns, which codeg's turn-scoped runtime must never trigger. codex-acp
+/// 1.1.9 ships `_session/steering` but not `promptRequired` (verified against
+/// the published tarball), so it stays `None` until a release implements the
+/// opt-in — then this is a one-line flip plus tests.
+///
+/// The static policy alone is NOT enough — launch prefers a PATH-resolved,
+/// user-installed adapter over the pinned npx package (see
+/// `commands::acp::acp_get_agent_status_core`, "Launch already prefers the
+/// PATH resolution"), so the synthesis must ALSO prove the running binary's
+/// `agent_info.version` meets this minimum.
+pub fn steering_prompt_required_min_version(_agent_type: AgentType) -> Option<&'static str> {
+    // DISABLED for every agent pending
+    // https://github.com/agentclientprotocol/claude-agent-acp/issues/934:
+    // claude-agent-acp 0.64.0's `injected` outcome is unsound when the
+    // injection lands mid-generation — the CLI closes the running result
+    // cycle, the adapter settles the owning session/prompt as a clean
+    // `end_turn` (observed 3ms after `injected`), and the steered
+    // continuation streams on as a detached, request-less turn: exactly the
+    // shape this gate exists to prevent, only reported as `injected` instead
+    // of `startedNewTurn` so the downgrade path never fires. Reproduced
+    // against the adapter's own SDK pin 0.3.220 (whose `SDKUserMessage` has
+    // no `priority` field, so the "now" stamp is a no-op).
+    //
+    // Once a release keeps the prompt pending through the steered
+    // continuation, restore the arm (and the positive matrices in this
+    // file's test + `connection.rs::synthesize_native_steering`'s):
+    //   AgentType::ClaudeCode => Some("<fixed release>"), // 0.64.0 added the #919 opt-in
+    None
+}
+
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
     if let AgentType::Custom(id) = agent_type {
         return crate::acp::custom_registry::get(id)
@@ -236,9 +333,29 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // and `permission_denied` resolving unannounced tool calls
             // (#923). Fast mode's config option now folds the SDK's
             // `fast_mode_disabled_reason` into its description (#921).
+            // 0.64.0 carries the SAME claude-agent-sdk (0.3.220) and ACP SDK
+            // (1.3.0), so Claude Code's own behavior is unchanged. It adds an
+            // opt-in host-owned steering fallback (#919): a `_session/steering`
+            // request may carry `_meta.steering.idleBehavior = "promptRequired"`,
+            // and when the turn it meant to steer already settled the adapter
+            // returns `{outcome:"promptRequired", reason:"noRunningTurn"}`
+            // WITHOUT consuming the content, so the host resubmits it through a
+            // normal `session/prompt` it owns. That opt-in was meant to make
+            // native steering safe to wire, but 0.64.0's ACTIVE path breaks
+            // the same contract (#934: a mid-generation `injected` settles the
+            // owning prompt as a clean `end_turn` and the continuation runs
+            // detached), so codeg keeps the native push channel OFF via
+            // `steering_prompt_required_min_version` and every session rides
+            // the codeg-mcp `check_user_feedback` pull (see
+            // `manager::submit_feedback`); the full wiring stays in place to
+            // re-enable on a fixed release. 0.64.0 also
+            // marks the per-question
+            // free-text "Other" elicitation field with the deliberately
+            // un-namespaced `_meta._askUserQuestionCustomAnswer` (#929, omitted
+            // from the release notes) — see `question::is_custom_answer_property`.
             distribution: AgentDistribution::Npx {
-                version: "0.63.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.63.0",
+                version: "0.64.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.64.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -252,7 +369,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             description: "ACP adapter for OpenAI's coding assistant",
             // codex-acp moved from zed-industries (Rust binary) to the
             // agentclientprotocol org (TypeScript rewrite, npx-distributed).
-            // 1.1.7 depends on `@openai/codex` ^0.145.0 and drives `codex
+            // 1.1.8 depends on `@openai/codex` ^0.145.0 and drives `codex
             // app-server`; since 1.0.1 it also resolves the resumed
             // `model_provider` from `~/.codex/config.toml` (#224), so codeg no
             // longer injects `MODEL_PROVIDER` to keep resumed sessions on the
@@ -278,15 +395,42 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the injected `codeg-mcp` server always survives. 1.1.6 adds
             // steering (#309): `_session/steering` injects a user prompt into
             // the LIVE turn (initialize advertises `_meta.steering.supported`)
-            // — not wired into codeg yet. 1.1.7 (#326) emits Plan-mode plan
+            // — codeg keeps codex on the MCP pull channel because 1.1.9 still
+            // lacks the `promptRequired` idle opt-in
+            // (`steering_prompt_required_min_version` → None; flipping it on
+            // is a one-liner once a release implements the opt-in AND its
+            // active `injected` path provably keeps the owning prompt pending
+            // — claude's 0.64.0 didn't, see #934 in the fn comment). 1.1.7
+            // (#326) emits Plan-mode plan
             // contents as a plain `agent_message_chunk`
             // (`_meta.codex.phase = "final_answer"`, no `<proposed_plan>` tags),
             // which the adapter's tag-splitter simply no-ops on — tagged output
-            // from older codex still renders as the proposed-plan card. 1.1.7
-            // declares no `engines.node`, so the 20.0.0 floor is retained.
+            // from older codex still renders as the proposed-plan card. 1.1.8
+            // (#351) gates Plan mode behind a review confirmation: when a plan
+            // item completes while `collaboration_mode` is `plan`, codex-acp
+            // sends a `session/request_permission` marked
+            // `_meta.codex = {kind:"plan_review", planItemId}` whose `toolCall`
+            // (`plan-review:<itemId>`, kind `switch_mode`, `rawInput.plan`) was
+            // NEVER announced as a `tool_call` — codeg seeds it from the request
+            // (see `is_codex_plan_review` / `handle_permission_request`) so the
+            // follow-up `tool_call_update` has a card to merge into. On approval
+            // codex flips the mode back to default (a mid-turn
+            // `config_option_update`) and runs the implementation turn inside
+            // the SAME `session/prompt`. 1.1.8 (#342) also hangs a structured
+            // `_meta.permission = {version, changes[]}` on each permission
+            // option, whose `changes[].description` codeg surfaces in the
+            // permission card. The `clientCapabilities.plan` path (structured
+            // `plan_update`s) does NOT apply: sacp 11.0.0's schema has neither
+            // the capability nor the session-update variant, so plans keep
+            // arriving as `agent_message_chunk`s. That also makes 1.1.9 (#354,
+            // which coalesces streamed plan snapshots to one `plan_update`
+            // every 150ms and flushes them at item/turn/permission boundaries)
+            // inert here — it only runs behind that capability, and its
+            // dependency set is byte-identical to 1.1.8's. 1.1.9 still declares
+            // no `engines.node`, so the 20.0.0 floor is retained.
             distribution: AgentDistribution::Npx {
-                version: "1.1.7",
-                package: "@agentclientprotocol/codex-acp@1.1.7",
+                version: "1.1.9",
+                package: "@agentclientprotocol/codex-acp@1.1.9",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -683,11 +827,31 @@ mod tests {
     }
 
     #[test]
+    fn steering_native_channel_disabled_for_all_agents_pending_upstream_934() {
+        // The native-steering policy bit is OFF across the board while
+        // claude-agent-acp #934 stands (`injected` settles the owning prompt
+        // mid-generation; see the fn comment). Every session — claude
+        // included — must ride the MCP pull channel. When upstream ships the
+        // fix, this becomes the "gates claude only" matrix again
+        // (ClaudeCode → Some("<fixed release>"), everyone else None).
+        for agent in [
+            AgentType::ClaudeCode,
+            AgentType::Codex,
+            AgentType::Gemini,
+            AgentType::OpenClaw,
+            AgentType::Grok,
+            AgentType::Custom("acme"),
+        ] {
+            assert_eq!(steering_prompt_required_min_version(agent), None);
+        }
+    }
+
+    #[test]
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.63.0",
-            "@agentclientprotocol/claude-agent-acp@0.63.0",
+            "0.64.0",
+            "@agentclientprotocol/claude-agent-acp@0.64.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -722,8 +886,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.1.7",
-            "@agentclientprotocol/codex-acp@1.1.7",
+            "1.1.9",
+            "@agentclientprotocol/codex-acp@1.1.9",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.32", "pi-acp@0.0.32", Some("22.0.0"));
@@ -751,6 +915,33 @@ mod tests {
     // other agent (current and future) keeps it `true`. Iterating the full
     // registry means a newly-added agent that wrongly opts out — or a
     // regression flipping OpenClaw back on — trips this assert.
+    // Only Claude Code and Codex ship as a third-party ACP adapter wrapping a
+    // vendor CLI of a different name. Every other agent's registry `cmd` IS the
+    // vendor CLI, so claiming an adapter relation for one would make preflight
+    // explain a split that doesn't exist.
+    #[test]
+    fn acp_adapter_relation_covers_only_wrapper_agents() {
+        for agent_type in all_acp_agents() {
+            let relation = acp_adapter_relation(agent_type);
+            let expected = matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex);
+            assert_eq!(
+                relation.is_some(),
+                expected,
+                "unexpected adapter relation for {agent_type:?}"
+            );
+            // The whole point is that the vendor CLI's name differs from the
+            // adapter command codeg actually launches.
+            if let Some(relation) = relation {
+                match get_agent_meta(agent_type).distribution {
+                    AgentDistribution::Npx { cmd, .. } => {
+                        assert_ne!(cmd, relation.native_cmd, "{agent_type:?}")
+                    }
+                    other => panic!("expected npx distribution for {agent_type:?}, got {other:?}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn only_openclaw_opts_out_of_mcp() {
         for agent_type in all_acp_agents() {
