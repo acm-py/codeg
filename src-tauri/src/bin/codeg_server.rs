@@ -49,6 +49,7 @@ fn main() -> ExitCode {
     // PATH initialisation MUST happen before the tokio runtime is created.
     // std::env::set_var is not thread-safe (unsafe in Rust edition 2024);
     // #[tokio::main] would spawn worker threads before we reach this point.
+    codeg_lib::process::ensure_agent_path_in_path();
     codeg_lib::process::ensure_node_in_path();
     codeg_lib::process::ensure_user_npm_prefix_in_path();
 

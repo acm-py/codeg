@@ -647,7 +647,7 @@ async fn build_agent(
             // install-prompt-routable error if it (or a BYO-pi override) isn't
             // resolvable, rather than letting pi-acp die mid-connection on a raw
             // ENOENT that surfaces as an opaque protocol error.
-            if agent_type == AgentType::Pi {
+            if agent_type == AgentType::Pi && !crate::process::uses_host_agents() {
                 if let Some(message) = pi_launch_preflight(runtime_env) {
                     return Err(AcpError::SdkNotInstalled(message));
                 }
@@ -660,6 +660,29 @@ async fn build_agent(
             }
             let mut merged_env = merge_agent_env(env, runtime_env);
             apply_codex_env_policy(agent_type, &mut merged_env);
+            if crate::process::uses_host_agents() {
+                if let Some(host_binary) =
+                    crate::commands::acp::host_agent_binary_for_acp_command(cmd)
+                {
+                    let host_path = crate::commands::acp::resolve_system_agent_binary(host_binary)
+                        .ok_or_else(|| {
+                            AcpError::SdkNotInstalled(format!(
+                                "{} is not installed on the host; install `{host_binary}` and make its bin directory available to the container.",
+                                meta.name
+                            ))
+                        })?;
+                    let env_key = match cmd {
+                        "claude-agent-acp" => "CLAUDE_CODE_EXECUTABLE",
+                        "codex-acp" => "CODEX_PATH",
+                        _ => unreachable!("host ACP mapping must have an env key"),
+                    };
+                    merged_env.retain(|(key, _)| key != env_key);
+                    merged_env.push((
+                        env_key.to_string(),
+                        host_path.to_string_lossy().into_owned(),
+                    ));
+                }
+            }
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -673,13 +696,19 @@ async fn build_agent(
                     merged_env.push(("APP_SERVER_LOGS".to_string(), dir));
                 }
             }
-            let mut parts: Vec<String> = Vec::new();
-            for (k, v) in &merged_env {
-                parts.push(format!("{k}={v}"));
+            let mut parts: Vec<String> = merged_env
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            let resolved_launcher = crate::commands::acp::resolve_npx_command(cmd).await;
+            if crate::process::uses_host_agents() && resolved_launcher.is_none() {
+                return Err(AcpError::SdkNotInstalled(format!(
+                    "{} is not available in host agent runtime. Install it on the host and ensure its bin directory is mounted.",
+                    meta.name
+                )));
             }
             parts.push(
-                crate::commands::acp::resolve_npx_command(cmd)
-                    .await
+                resolved_launcher
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| {
                         crate::process::normalized_program(cmd)
@@ -782,8 +811,11 @@ async fn build_agent(
             // verbatim by the frontend catch block in
             // `src/contexts/acp-connections-context.tsx` to surface a
             // localized install prompt. Do not change the wording.
-            let cached =
-                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?;
+            let cached = if crate::process::uses_host_agents() {
+                None
+            } else {
+                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
+            };
             let binary_path = match cached {
                 Some((path, cached_version)) => {
                     if cached_version == registry_version {
@@ -803,7 +835,7 @@ async fn build_agent(
                     let system = crate::commands::acp::resolve_system_agent_binary(cmd)
                         .ok_or_else(|| {
                             AcpError::SdkNotInstalled(format!(
-                                "{} is not installed. Please install it in Agent Settings.",
+                                "{} is not installed. Please install it on the host and mount its executable and dependencies.",
                                 meta.name
                             ))
                         })?;
@@ -942,40 +974,52 @@ async fn build_agent(
             ..
         } => {
             let merged_env = merge_agent_env(env, runtime_env);
-            let mut parts: Vec<String> = Vec::new();
-            for (k, v) in &merged_env {
-                parts.push(format!("{k}={v}"));
+            let mut launch_parts: Option<Vec<String>> = None;
+            if !crate::process::uses_host_agents() {
+                if let Some(uvx_path) = crate::commands::acp::resolve_uvx_command() {
+                    // Primary: `uvx [--python <ver>] --from <pinned package>
+                    // <entry script>`. uvx fetches + caches the pinned package
+                    // on first use; the `--python` pin keeps it on an
+                    // interpreter the agent supports.
+                    let mut candidate = Vec::new();
+                    candidate.push(uvx_path.to_string_lossy().to_string());
+                    candidate.extend(crate::commands::acp::uvx_python_args(python));
+                    candidate.push("--from".into());
+                    candidate.push(package.to_string());
+                    candidate.push(cmd.to_string());
+                    for a in args {
+                        candidate.push((*a).into());
+                    }
+                    launch_parts = Some(candidate);
+                }
             }
-            if let Some(uvx_path) = crate::commands::acp::resolve_uvx_command() {
-                // Primary: `uvx [--python <ver>] --from <pinned package> <entry
-                // script>`. uvx fetches + caches the pinned package on first use;
-                // the `--python` pin keeps it on an interpreter the agent
-                // supports (see the registry `python` field).
-                parts.push(uvx_path.to_string_lossy().to_string());
-                parts.extend(crate::commands::acp::uvx_python_args(python));
-                parts.push("--from".into());
-                parts.push(package.to_string());
-                parts.push(cmd.to_string());
-                for a in args {
-                    parts.push((*a).into());
+            if launch_parts.is_none() {
+                if let Some((sys_path, sys_args)) = system_cmd.and_then(|(c, a)| {
+                    crate::commands::acp::resolve_command_on_path(c).map(|path| (path, a))
+                }) {
+                    // Fallback: the agent's own CLI is already on PATH (for
+                    // example `hermes acp`), installed via its official
+                    // installer rather than provisioned through uvx.
+                    tracing::warn!(
+                        "[ACP][{}] uvx unavailable; falling back to system command {:?}",
+                        meta.name, sys_path
+                    );
+                    // `system_cmd` is a complete launch recipe for the PATH
+                    // binary; the uvx entry-script args do not necessarily
+                    // apply to it.
+                    let mut candidate = vec![sys_path.to_string_lossy().to_string()];
+                    for a in sys_args {
+                        candidate.push((*a).into());
+                    }
+                    launch_parts = Some(candidate);
                 }
-            } else if let Some((sys_path, sys_args)) = system_cmd.and_then(|(c, a)| {
-                crate::commands::acp::resolve_command_on_path(c).map(|path| (path, a))
-            }) {
-                // Fallback: the agent's own CLI is already on PATH (e.g.
-                // `hermes acp`), installed via its official installer rather
-                // than provisioned through uvx.
-                tracing::warn!(
-                    "[ACP][{}] uvx unavailable; falling back to system command {:?}",
-                    meta.name, sys_path
-                );
-                // `system_cmd` is a complete launch recipe for the PATH binary;
-                // the uvx entry-script `args` don't necessarily apply to it
-                // (for Hermes both are empty / `["acp"]`, so this is exact).
-                parts.push(sys_path.to_string_lossy().to_string());
-                for a in sys_args {
-                    parts.push((*a).into());
-                }
+            }
+            let mut parts: Vec<String> = merged_env
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            if let Some(launch_parts) = launch_parts {
+                parts.extend(launch_parts);
             } else {
                 // INVARIANT: the substring "is not installed" is matched
                 // verbatim by the frontend catch block in
@@ -983,7 +1027,7 @@ async fn build_agent(
                 // localized install prompt. Do not change the wording.
                 return Err(AcpError::SdkNotInstalled(format!(
                     "{} is not installed. Please install it in Agent Settings.",
-                    meta.name
+                    meta.name,
                 )));
             }
             let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();

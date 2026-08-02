@@ -25,7 +25,34 @@ pub struct AgentSettingsUpdate {
     pub model_provider_id: Option<i32>,
 }
 
+fn host_agent_available(agent_type: AgentType) -> bool {
+    let meta = crate::acp::registry::get_agent_meta(agent_type);
+    match meta.distribution {
+        crate::acp::registry::AgentDistribution::Npx { cmd, .. } => {
+            if let Some(host_binary) = crate::commands::acp::host_agent_binary_for_acp_command(cmd)
+            {
+                return crate::commands::acp::resolve_system_agent_binary(host_binary).is_some()
+                    && crate::commands::acp::resolve_bundled_acp_adapter(cmd).is_some();
+            }
+            crate::commands::acp::resolve_command_on_path(cmd).is_some()
+        }
+        crate::acp::registry::AgentDistribution::Binary { cmd, platforms, .. } => {
+            platforms
+                .iter()
+                .any(|platform| platform.platform == crate::acp::registry::current_platform())
+                && crate::commands::acp::resolve_system_agent_binary(cmd).is_some()
+        }
+        crate::acp::registry::AgentDistribution::Uvx { system_cmd, .. } => system_cmd
+            .map(|(cmd, _)| crate::commands::acp::resolve_command_on_path(cmd).is_some())
+            .unwrap_or(false),
+    }
+}
+
 fn default_enabled(agent_type: AgentType) -> bool {
+    if crate::process::uses_host_agents() {
+        return host_agent_available(agent_type);
+    }
+
     matches!(
         agent_type,
         AgentType::ClaudeCode

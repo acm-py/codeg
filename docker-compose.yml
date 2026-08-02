@@ -1,18 +1,39 @@
 services:
   codeg:
-    build: .
-    # Or use a pre-built image:
-    # image: xintaofei/codeg:latest
+    image: ghcr.io/xintaofei/codeg:latest
+    # Local development only; production deployment should use the image built
+    # and published by GitHub Actions above.
+    # build: .
     ports:
       - "3080:3080"
     volumes:
       - codeg-data:/data
-      # Mount your project directories (optional):
-      # - /path/to/projects:/projects
+      # Codeg reads native agent configuration from the host home directory.
+      # Keep the absolute path identical so project paths and config paths
+      # remain stable inside and outside the container.
+      - "${CODEG_HOST_HOME:-${HOME:-/root}}:${CODEG_HOST_HOME:-${HOME:-/root}}"
+      # Linuxbrew is outside /home/<user> on many Linux hosts. The source is
+      # configurable for hosts using another brew prefix.
+      - "${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}:ro"
+      # Expose common host installation roots under /host. They are kept out
+      # of the container's own /usr tree; startup prepends only existing Agent
+      # bin directories to PATH and ignores missing roots.
+      - ${CODEG_HOST_USR_LOCAL:-/usr/local}:/host/usr/local:ro
+      - ${CODEG_HOST_USR:-/usr}:/host/usr:ro
+      - ${CODEG_HOST_OPT:-/opt}:/host/opt:ro
+      # Mount project directories at the same absolute path used on the host.
+      # Repositories below CODEG_HOST_HOME are already covered by the home
+      # mount. Add outside-home paths here when needed, for example:
+      # - /srv/projects:/srv/projects
     environment:
       - CODEG_TOKEN=${CODEG_TOKEN:-}
       - CODEG_PORT=3080
       - CODEG_HOST=0.0.0.0
+      - HOME=${CODEG_HOST_HOME:-${HOME:-/root}}
+      - CODEG_HOST_BREW_HOME=${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}
+      - CODEG_AGENT_RUNTIME=${CODEG_AGENT_RUNTIME:-host}
+      - CODEG_AGENT_PATH=${CODEG_AGENT_PATH:-}
+      - CODEG_HOST_AGENT_PATH=${CODEG_HOST_AGENT_PATH:-}
     # In-place upgrades (Settings → Software Update) rewrite the binaries and
     # web assets inside this container's writable layer, not the image. The
     # codeg-data volume persists, but an upgrade lives only in the running

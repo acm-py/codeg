@@ -149,11 +149,19 @@ irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
 $env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
-**Docker** — 同一个服务器，装进一个容器：
+**Docker** — 默认复用宿主机的 Agent 与配置。容器内运行 Codeg 和 ACP，宿主机只需要提供挂载目录，不需要启动任何桥接进程。在项目目录旁执行以下命令（也可以把变量写入 `.env`）：
 
 ```bash
-docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
+export CODEG_HOST_HOME=/home/your-user
+docker compose pull
+docker compose up -d
 ```
+
+Compose 会把 `CODEG_HOST_HOME` 挂载到容器内的相同绝对路径，并把宿主机的 `/usr/local`、`/usr`、`/opt` 挂载到容器的 `/host` 下。Codeg 启动时会自动扫描这些目录以及 home 下的 nvm、pnpm、Volta、asdf、bun、cargo 等常见 bin 路径，因此读取的是宿主机配置并直接执行容器内可见的宿主机 Agent 命令。容器只安装 ACP 适配器及其 JS 依赖，不安装 Agent 本体的 npm/Python 包、不下载 Agent 二进制；宿主机缺少某个 Agent 时，容器中的该 Agent 会显示为不可用，也不会自动启用或安装容器版本。
+
+由于 home 目录以读写方式挂载，只有在信任镜像和容器配置时才使用此模式；它会让容器内的 Agent 看到宿主机的凭据和配置文件。宿主机需要与容器使用相同的操作系统/CPU 架构，Linux 宿主机最可靠；macOS 或 Windows 宿主机上的原生 Agent 二进制通常不能直接在 Linux 容器中运行。npm shim、Node/Python/uv 以及对应依赖目录也必须位于挂载的 home、`/usr/local`、`/usr` 或 `/opt` 中。项目目录若不在 home 下，请在 `docker-compose.yml` 中以相同绝对路径追加 volume。
+
+如需显式增加自定义 Agent bin 目录，可设置 `CODEG_AGENT_PATH` 或 `CODEG_HOST_AGENT_PATH`，目录之间使用宿主机平台的 PATH 分隔符。该模式适用于 Docker 与宿主机均为 Unix 环境；若需要原来的容器内安装行为，设置 `CODEG_AGENT_RUNTIME=container`，再重新创建容器。
 
 **移动端** — 安装 [iOS 应用](https://apps.apple.com/app/codeg-client/id6785199071) 或 [Android APK](https://github.com/xintaofei/codeg-android/releases/latest)，再把它指向桌面应用的 **Web 服务**或你自己的 `codeg-server`：填地址、填令牌，完成。配对步骤见 [移动应用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
 
