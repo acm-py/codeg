@@ -37,8 +37,8 @@ RUN apt-get update && apt-get install -y \
 # never uses the compatible fallback binaries bundled by the npm packages.
 RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
-       @agentclientprotocol/claude-agent-acp@0.63.0 \
-       @agentclientprotocol/codex-acp@1.1.7
+       @agentclientprotocol/claude-agent-acp@0.64.0 \
+       @agentclientprotocol/codex-acp@1.1.9
 # libicu72: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-bookworm-slim
 # bundles Node's own ICU statically and so does NOT install system libicu — without
@@ -63,6 +63,7 @@ ENV SHELL=/bin/bash
 ENV HOME=/root
 ENV CODEG_AGENT_RUNTIME=host
 ENV CODEG_ACP_ADAPTER_DIR=/opt/codeg/acp
+ENV CODEG_ACP_NODE=/usr/local/bin/node
 # In-place self-update markers: tells the running server it is a container
 # (for the post-upgrade "also pull the image" hint) and how long the
 # supervisor waits before relaunching the worker after an upgrade.

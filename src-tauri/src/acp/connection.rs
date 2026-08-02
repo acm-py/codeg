@@ -785,6 +785,20 @@ async fn build_agent(
                     meta.name
                 )));
             }
+            if crate::process::uses_host_agents()
+                && crate::commands::acp::host_agent_binary_for_acp_command(cmd).is_some()
+            {
+                let node = crate::commands::acp::resolve_bundled_acp_node().ok_or_else(|| {
+                    AcpError::SpawnFailed(
+                        "container Node.js is unavailable for the bundled ACP adapter"
+                            .to_string(),
+                    )
+                })?;
+                // The adapter entrypoints are npm shims with an env-based Node
+                // shebang. Run them through the container Node explicitly so
+                // host PATH entries remain available to the actual Agent CLI.
+                parts.push(node.to_string_lossy().into_owned());
+            }
             parts.push(
                 resolved_launcher
                     .map(|p| p.to_string_lossy().to_string())

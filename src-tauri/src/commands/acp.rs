@@ -258,6 +258,7 @@ pub(crate) fn resolve_bundled_acp_adapter(cmd: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|path| path.is_file())
+}
 
 /// Resolve the VENDOR CLI wrapped by an ACP adapter agent (`claude`, `codex`
 /// — see [`registry::acp_adapter_relation`]). codeg never launches this: it is
@@ -285,6 +286,25 @@ pub(crate) async fn resolve_vendor_cli(cmd: &str, extra_dirs: &[&str]) -> Option
         let cand = home.join(dir).join(&exe);
         cand.is_file().then_some(cand)
     })
+}
+
+/// Resolve the Node.js binary shipped by the container for bundled ACP
+/// adapters. Host-agent mode intentionally keeps the host directories first in
+/// `PATH` so the host CLI and its dependencies resolve together; invoking an
+/// adapter through its `#!/usr/bin/env node` shim would therefore select the
+/// host Node.js binary instead of the container runtime.
+pub(crate) fn resolve_bundled_acp_node() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("CODEG_ACP_NODE") {
+        let path = PathBuf::from(configured);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    ["/usr/local/bin/node", "/usr/bin/node"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
 }
 
 /// Resolve the `uvx` (uv tool runner) executable used to launch Python ACP
@@ -412,6 +432,9 @@ pub(crate) async fn resolve_npx_command(cmd: &str) -> Option<PathBuf> {
             // container owns this ACP layer; only the underlying Agent binary
             // is supplied by the host.
             if resolve_system_agent_binary(host_binary).is_none() {
+                return None;
+            }
+            if resolve_bundled_acp_node().is_none() {
                 return None;
             }
             return resolve_bundled_acp_adapter(cmd);
