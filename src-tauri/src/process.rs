@@ -1,10 +1,7 @@
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-
-#[cfg(windows)]
-use std::path::Path;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -86,13 +83,15 @@ pub(crate) fn is_host_agent_path(path: &std::path::Path) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-/// Prepend Agent directories to PATH before any async work starts.
+/// Add Agent directories to PATH before any async work starts.
 ///
 /// Docker host-agent mode is deliberately filesystem-only: the container
 /// discovers commands in mounted host directories and executes them in its own
 /// process namespace. The compose file mounts host system directories under
 /// `/host`, while the host home directory keeps its original absolute path so
-/// Agent config and project paths continue to resolve normally.
+/// Agent config and project paths continue to resolve normally. Host system
+/// directories are appended so their core utilities cannot replace the
+/// container's ABI-compatible tools.
 pub fn ensure_agent_path_in_path() {
     let separator = if cfg!(windows) { ';' } else { ':' };
     let mut dirs = Vec::new();
@@ -117,12 +116,43 @@ pub fn ensure_agent_path_in_path() {
     }
 
     let mut seen = std::collections::HashSet::new();
-    for dir in dirs.into_iter().filter(|dir| dir.is_dir()).rev() {
+    let mut preferred = Vec::new();
+    let mut fallback = Vec::new();
+    for dir in dirs.into_iter().filter(|dir| dir.is_dir()) {
         let key = dir.to_string_lossy().into_owned();
-        if seen.insert(key.clone()) {
-            prepend_to_path(&dir);
+        if !seen.insert(key) {
+            continue;
+        }
+        if is_host_system_path(&dir) {
+            fallback.push(dir);
+        } else {
+            preferred.push(dir);
         }
     }
+
+    for dir in fallback {
+        append_to_path(&dir);
+    }
+    for dir in preferred.into_iter().rev() {
+        prepend_to_path(&dir);
+    }
+}
+
+/// Host system binaries may require a newer glibc than the container. Keep
+/// them discoverable for an Agent installed there, but never let them shadow
+/// the container's `id`, `git`, shell, or other core utilities.
+fn is_host_system_path(path: &Path) -> bool {
+    [
+        "/host/usr/local/bin",
+        "/host/usr/bin",
+        "/host/bin",
+        "/host/snap/bin",
+    ]
+    .iter()
+    .any(|root| {
+        let root = Path::new(root);
+        path == root || path.starts_with(root)
+    })
 }
 
 /// Return the directories used by the Docker compose deployment to expose
@@ -747,6 +777,17 @@ pub(crate) fn prepend_to_path(dir: &std::path::Path) {
     std::env::set_var("PATH", new_path);
 }
 
+fn append_to_path(dir: &Path) {
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = current.clone();
+    if !new_path.is_empty() {
+        new_path.push(sep);
+    }
+    new_path.push(dir);
+    std::env::set_var("PATH", new_path);
+}
+
 /// Return the user-local npm prefix directory (`~/.codeg/npm-global/`).
 ///
 /// Used as a fallback when `npm install -g` fails with EACCES because the
@@ -837,10 +878,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_runtime_from_value, collect_lines_lossy, spawn_retrying_exec_busy,
-        spawn_retrying_exec_busy_within, AgentRuntime,
+        agent_runtime_from_value, collect_lines_lossy, is_host_system_path,
+        spawn_retrying_exec_busy, spawn_retrying_exec_busy_within, AgentRuntime,
     };
     use std::io::Cursor;
+    use std::path::Path;
     use std::time::Duration;
 
     #[test]
@@ -854,6 +896,13 @@ mod tests {
         for value in ["host", "HOST", "host-mounted", "host_mounted"] {
             assert_eq!(agent_runtime_from_value(Some(value)), AgentRuntime::Host);
         }
+    }
+
+    #[test]
+    fn host_system_paths_are_fallbacks() {
+        assert!(is_host_system_path(Path::new("/host/usr/bin")));
+        assert!(is_host_system_path(Path::new("/host/usr/bin/id")));
+        assert!(!is_host_system_path(Path::new("/home/bing/.local/bin")));
     }
 
     #[tokio::test]
