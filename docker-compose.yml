@@ -16,7 +16,7 @@ services:
       # configurable for hosts using another brew prefix.
       - "${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}:ro"
       # Expose common host installation roots under /host. They are kept out
-      # of the container's own /usr tree; startup prepends only existing Agent
+      # of the container's own /usr tree; startup appends only existing Agent
       # bin directories to PATH and ignores missing roots.
       - ${CODEG_HOST_USR_LOCAL:-/usr/local}:/host/usr/local:ro
       - ${CODEG_HOST_USR:-/usr}:/host/usr:ro

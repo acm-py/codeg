@@ -289,10 +289,9 @@ pub(crate) async fn resolve_vendor_cli(cmd: &str, extra_dirs: &[&str]) -> Option
 }
 
 /// Resolve the Node.js binary shipped by the container for bundled ACP
-/// adapters. Host-agent mode intentionally keeps the host directories first in
-/// `PATH` so the host CLI and its dependencies resolve together; invoking an
-/// adapter through its `#!/usr/bin/env node` shim would therefore select the
-/// host Node.js binary instead of the container runtime.
+/// adapters. Host-agent mode keeps host command directories after the
+/// container's ABI-compatible tools; this explicit path makes the adapter
+/// runtime independent of PATH ordering.
 pub(crate) fn resolve_bundled_acp_node() -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os("CODEG_ACP_NODE") {
         let path = PathBuf::from(configured);

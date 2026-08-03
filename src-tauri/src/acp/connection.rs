@@ -795,8 +795,9 @@ async fn build_agent(
                     )
                 })?;
                 // The adapter entrypoints are npm shims with an env-based Node
-                // shebang. Run them through the container Node explicitly so
-                // host PATH entries remain available to the actual Agent CLI.
+                // shebang. Run them through the container Node explicitly;
+                // the host CLI remains available through its absolute path and
+                // the host directories remain available after container PATH.
                 parts.push(node.to_string_lossy().into_owned());
             }
             parts.push(

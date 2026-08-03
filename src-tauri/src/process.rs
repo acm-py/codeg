@@ -89,9 +89,9 @@ pub(crate) fn is_host_agent_path(path: &std::path::Path) -> bool {
 /// discovers commands in mounted host directories and executes them in its own
 /// process namespace. The compose file mounts host system directories under
 /// `/host`, while the host home directory keeps its original absolute path so
-/// Agent config and project paths continue to resolve normally. Host system
-/// directories are appended so their core utilities cannot replace the
-/// container's ABI-compatible tools.
+/// Agent config and project paths continue to resolve normally. All host
+/// directories are appended so host utilities cannot replace the container's
+/// ABI-compatible tools.
 pub fn ensure_agent_path_in_path() {
     let separator = if cfg!(windows) { ';' } else { ':' };
     let mut dirs = Vec::new();
@@ -116,43 +116,12 @@ pub fn ensure_agent_path_in_path() {
     }
 
     let mut seen = std::collections::HashSet::new();
-    let mut preferred = Vec::new();
-    let mut fallback = Vec::new();
     for dir in dirs.into_iter().filter(|dir| dir.is_dir()) {
         let key = dir.to_string_lossy().into_owned();
-        if !seen.insert(key) {
-            continue;
-        }
-        if is_host_system_path(&dir) {
-            fallback.push(dir);
-        } else {
-            preferred.push(dir);
+        if seen.insert(key) {
+            append_to_path(&dir);
         }
     }
-
-    for dir in fallback {
-        append_to_path(&dir);
-    }
-    for dir in preferred.into_iter().rev() {
-        prepend_to_path(&dir);
-    }
-}
-
-/// Host system binaries may require a newer glibc than the container. Keep
-/// them discoverable for an Agent installed there, but never let them shadow
-/// the container's `id`, `git`, shell, or other core utilities.
-fn is_host_system_path(path: &Path) -> bool {
-    [
-        "/host/usr/local/bin",
-        "/host/usr/bin",
-        "/host/bin",
-        "/host/snap/bin",
-    ]
-    .iter()
-    .any(|root| {
-        let root = Path::new(root);
-        path == root || path.starts_with(root)
-    })
 }
 
 /// Return the directories used by the Docker compose deployment to expose
@@ -186,7 +155,7 @@ fn host_agent_path_candidates() -> Vec<PathBuf> {
 
     // These are the fixed destinations used by docker-compose.yml. Keeping
     // them under /host avoids overlaying the container's own /usr tree while
-    // still allowing host Node/Python/uv shims to resolve their dependencies.
+    // still allowing host Agent commands to resolve.
     for path in [
         "/home/linuxbrew/.linuxbrew/bin",
         "/host/usr/local/bin",
@@ -317,10 +286,9 @@ where
 /// Resolve Git to the container copy in host-Agent mode.
 ///
 /// The Docker deployment mounts host installation roots under `/host` and
-/// prepends them to PATH so host Agents and their dependencies are discoverable.
-/// That also makes a mounted host `/usr/bin/git` win over the image's Git; the
-/// host binary may require a newer glibc than the container provides. Git is a
-/// Codeg-owned tool, so keep its executable inside the container.
+/// appends them to PATH so host Agents remain discoverable without allowing a
+/// host binary to replace the image's Git. Git is a Codeg-owned tool, so keep
+/// its executable inside the container.
 pub fn git_program() -> OsString {
     #[cfg(unix)]
     if uses_host_agents() {
@@ -878,11 +846,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_runtime_from_value, collect_lines_lossy, is_host_system_path,
-        spawn_retrying_exec_busy, spawn_retrying_exec_busy_within, AgentRuntime,
+        agent_runtime_from_value, collect_lines_lossy, spawn_retrying_exec_busy,
+        spawn_retrying_exec_busy_within, AgentRuntime,
     };
     use std::io::Cursor;
-    use std::path::Path;
     use std::time::Duration;
 
     #[test]
@@ -896,13 +863,6 @@ mod tests {
         for value in ["host", "HOST", "host-mounted", "host_mounted"] {
             assert_eq!(agent_runtime_from_value(Some(value)), AgentRuntime::Host);
         }
-    }
-
-    #[test]
-    fn host_system_paths_are_fallbacks() {
-        assert!(is_host_system_path(Path::new("/host/usr/bin")));
-        assert!(is_host_system_path(Path::new("/host/usr/bin/id")));
-        assert!(!is_host_system_path(Path::new("/home/bing/.local/bin")));
     }
 
     #[tokio::test]
