@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libicu72 \
     && rm -rf /var/lib/apt/lists/*
+COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # These packages are ACP transport adapters only. Their underlying Claude Code
 # and Codex executables are selected from host mounts at runtime; host mode
 # never uses the compatible fallback binaries bundled by the npm packages.
@@ -64,6 +65,7 @@ ENV HOME=/root
 ENV CODEG_AGENT_RUNTIME=host
 ENV CODEG_ACP_ADAPTER_DIR=/opt/codeg/acp
 ENV CODEG_ACP_NODE=/usr/local/bin/node
+ENV PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 # In-place self-update markers: tells the running server it is a container
 # (for the post-upgrade "also pull the image" hint) and how long the
 # supervisor waits before relaunching the worker after an upgrade.
