@@ -32,7 +32,7 @@ services:
       - CODEG_HOST=0.0.0.0
       - HOME=${CODEG_HOST_HOME:-${HOME:-/root}}
       - SHELL=/bin/bash
-      - PATH=${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/sbin
       - CODEG_HOST_BREW_HOME=${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}
       - CODEG_AGENT_RUNTIME=${CODEG_AGENT_RUNTIME:-host}
       - CODEG_AGENT_PATH=${CODEG_AGENT_PATH:-}
