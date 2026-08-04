@@ -32,7 +32,7 @@ services:
       - CODEG_HOST=0.0.0.0
       - HOME=${CODEG_HOST_HOME:-${HOME:-/root}}
       - SHELL=/bin/bash
-      - PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/sbin
+      - PATH=${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/bin:${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - CODEG_HOST_BREW_HOME=${CODEG_HOST_BREW_HOME:-/home/linuxbrew/.linuxbrew}
       - CODEG_AGENT_RUNTIME=${CODEG_AGENT_RUNTIME:-host}
       - CODEG_AGENT_PATH=${CODEG_AGENT_PATH:-}
@@ -40,7 +40,7 @@ services:
     # Load the mounted host login environment so its existing .profile/.bashrc
     # exports (including Homebrew) reach codeg and the Agent processes it starts.
     # Keep zsh out of the container shell selection.
-    command: ["/bin/bash", "-ilc", "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; exec /usr/local/bin/codeg-server --supervise"]
+    command: ["/bin/bash", "-ilc", "exec /usr/local/bin/codeg-server --supervise"]
     # In-place upgrades (Settings → Software Update) rewrite the binaries and
     # web assets inside this container's writable layer, not the image. The
     # codeg-data volume persists, but an upgrade lives only in the running

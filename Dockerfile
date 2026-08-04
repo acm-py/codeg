@@ -21,7 +21,7 @@ RUN cargo build --release --bin codeg-server --no-default-features \
  && cargo build --release --bin codeg-mcp --no-default-features
 
 # Stage 3: Runtime
-FROM node:24-bookworm-slim
+FROM node:24-trixie-slim
 RUN apt-get update && apt-get install -y \
     libsqlite3-0 \
     git \
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     ripgrep \
     python3 \
     python3-pip \
-    libicu72 \
+    libicu76 \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # These packages are ACP transport adapters only. Their underlying Claude Code
@@ -41,13 +41,15 @@ RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
        @agentclientprotocol/claude-agent-acp@0.64.1 \
        @agentclientprotocol/codex-acp@1.1.9
-# libicu72: OfficeCLI ships as a self-contained binary with an embedded .NET
-# runtime, which requires the system ICU library at startup. node:*-bookworm-slim
+# libicu76: OfficeCLI ships as a self-contained binary with an embedded .NET
+# runtime, which requires the system ICU library at startup. node:*-trixie-slim
 # bundles Node's own ICU statically and so does NOT install system libicu — without
 # this, every `officecli` invocation aborts with "Couldn't find a valid ICU package
 # installed on the system", breaking both skill sync and office file preview in the
-# server/Docker mode. The version (72) is pinned to Debian bookworm; bump it to match
-# if the base image moves to a newer Debian release (e.g. trixie ships libicu76).
+# server/Docker mode. The version (76) is pinned to Debian trixie; update it if
+# the runtime base image moves to another Debian release.
+# Debian trixie ships glibc 2.41, which is compatible with the current host's
+# Homebrew binaries requiring GLIBC_2.39 while retaining the official Node image.
 
 COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
 COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
@@ -66,7 +68,7 @@ ENV HOME=/root
 ENV CODEG_AGENT_RUNTIME=host
 ENV CODEG_ACP_ADAPTER_DIR=/opt/codeg/acp
 ENV CODEG_ACP_NODE=/usr/local/bin/node
-ENV PATH=${PATH}:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin
+ENV PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 # In-place self-update markers: tells the running server it is a container
 # (for the post-upgrade "also pull the image" hint) and how long the
 # supervisor waits before relaunching the worker after an upgrade.
