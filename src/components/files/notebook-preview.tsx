@@ -90,7 +90,8 @@ function Cell({
 export function NotebookPreview({ tab }: { tab: FileWorkspaceTab }) {
   const t = useTranslations("Folder.fileWorkspacePanel")
   const parsed = useMemo(() => parseNotebook(tab.content ?? ""), [tab.content])
-  const title = tab.title || tab.path.split(/[\\/]/).pop() || "Notebook"
+  const title =
+    tab.title || tab.path?.split(/[\\/]/).pop() || "Notebook"
 
   if ("error" in parsed) {
     return (
