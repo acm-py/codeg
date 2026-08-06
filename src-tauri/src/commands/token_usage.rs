@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_error::AppCommandError;
 use crate::commands::conversations::get_folder_conversation_core;
 use crate::db::entities::folder;
+use crate::db::service::app_metadata_service;
 use crate::db::service::token_usage_service::{
     self as usage_service, FactQuery, UsageFact, UsageFactRow,
 };
@@ -88,6 +89,25 @@ const PROGRESS_INTERVAL_MS: i64 = 150;
 /// How many conversations the "biggest sessions" list returns.
 const TOP_CONVERSATIONS: usize = 8;
 
+/// Identifies the accounting the stored facts were produced under. Bump it
+/// whenever a change makes previously written rows wrong rather than merely
+/// stale — the next sync then rebuilds everything instead of trusting stamps
+/// that only ever tracked whether the *transcript* moved.
+///
+/// Without this, a fix to how tokens are counted would reach only the
+/// conversations that happen to be touched afterwards, and the dashboard would
+/// keep serving a mix of old wrong numbers and new right ones indefinitely.
+///
+/// * `1` — the original per-turn accounting.
+/// * `2` — one usage record per API call (Claude wrote one line per content
+///   block, each repeating the same usage); every Codex model round-trip
+///   counted via cumulative-counter deltas; Claude `Task` sub-agent transcripts
+///   counted against the session that launched them; and facts anchored at the
+///   turn's own timestamp instead of its last tool result.
+const FACT_SCHEMA_VERSION: &str = "2";
+
+const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
+
 /// Serializes syncs. `try_lock` rather than queueing: a second sync racing the
 /// first would re-parse the same files for no benefit, and the caller can just
 /// be told one is already running.
@@ -122,10 +142,30 @@ fn clamp_i64(v: u64) -> i64 {
 /// Turn a parsed conversation's turns into storable facts.
 ///
 /// Only turns that actually report usage are kept — a zero-token turn would add
-/// a row that contributes nothing but inflates the turn count. `occurred_at`
-/// prefers `completed_at` (when the call finished) and falls back to the turn's
-/// own timestamp, matching how the rest of the app reads those two fields.
-pub(crate) fn facts_from_turns(turns: &[MessageTurn]) -> Vec<UsageFact> {
+/// a row that contributes nothing but inflates the turn count.
+///
+/// `occurred_at` is the turn's **own** timestamp — when the assistant spoke and
+/// the usage was reported — not `completed_at`. The two differ by more than
+/// they look: a turn absorbs the tool results that follow it, so `completed_at`
+/// is the moment the *last tool* finished, and one stalled tool (a long build,
+/// a command left waiting overnight) drags it arbitrarily far from the API call
+/// that actually spent the tokens. Real transcripts hold gaps of more than a
+/// day, which is exactly how a turn's spend lands on a calendar day it had
+/// nothing to do with. The turn's own timestamp is bounded by the turn itself,
+/// and it keeps the series in transcript order.
+///
+/// `session_model` backfills turns whose parser records no per-turn model.
+/// Codex is the motivating case: its rollout files carry the model in
+/// `turn_context` events, which the parser folds into the *session* summary
+/// while every turn stays `model: None` — without the fallback, all of a Codex
+/// session's spend lands in the dashboard's "unknown model" slice. A turn that
+/// does name its own model always wins, so mid-session switches recorded by a
+/// parser are never overwritten.
+pub(crate) fn facts_from_turns(
+    turns: &[MessageTurn],
+    session_model: Option<&str>,
+) -> Vec<UsageFact> {
+    let session_model = session_model.map(str::trim).filter(|m| !m.is_empty());
     turns
         .iter()
         .enumerate()
@@ -147,10 +187,11 @@ pub(crate) fn facts_from_turns(turns: &[MessageTurn]) -> Vec<UsageFact> {
                 .model
                 .as_ref()
                 .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty());
+                .filter(|m| !m.is_empty())
+                .or_else(|| session_model.map(String::from));
             Some(UsageFact {
                 turn_key,
-                occurred_at: turn.completed_at.unwrap_or(turn.timestamp),
+                occurred_at: turn.timestamp,
                 model,
                 input_tokens: input,
                 output_tokens: output,
@@ -189,7 +230,8 @@ pub(crate) fn facts_from_detail(
     detail: &DbConversationDetail,
     fallback_at: DateTime<Utc>,
 ) -> Vec<UsageFact> {
-    let per_turn = facts_from_turns(&detail.turns);
+    let session_model = detail.summary.model.as_deref();
+    let per_turn = facts_from_turns(&detail.turns, session_model);
     if !per_turn.is_empty() {
         return per_turn;
     }
@@ -474,7 +516,7 @@ pub(crate) fn aggregate_report(
             turn_count,
         })
         .collect();
-    heatmap.sort_by(|a, b| (a.weekday, a.hour).cmp(&(b.weekday, b.hour)));
+    heatmap.sort_by_key(|a| (a.weekday, a.hour));
 
     let mut top: Vec<(i32, u64, u64, DateTime<Utc>, String, i32)> = per_conversation
         .into_iter()
@@ -733,6 +775,16 @@ pub async fn token_usage_report_core(
     };
     let mut report = aggregate_report(&rows, &previous_rows, &opts);
 
+    // The headline session count follows the workspace list, not the fact
+    // table. The fold's distinct-id count includes delegation children the
+    // sidebar hides and misses sessions that never recorded usage (empty ones,
+    // agents without token counts, transcripts the agent's retention already
+    // deleted) — so with an unbounded range it would visibly disagree with the
+    // status bar's session counter. The strip's averages divide by the same
+    // number, so the cell stays self-consistent.
+    report.totals.conversation_count =
+        usage_service::workspace_conversation_count(conn, &query).await?;
+
     // Titles are the one thing the fold can't produce — resolve just the ids
     // that made the top list.
     let top_ids: Vec<i32> = report
@@ -863,6 +915,25 @@ pub async fn token_usage_sync_core(
     SYNC_RUNNING.store(true, std::sync::atomic::Ordering::Relaxed);
     let _running = RunningFlag;
 
+    // Rows written under older accounting are wrong, not stale, so no stamp
+    // will ever mark them for re-parse. Upgrading the mode is what actually
+    // delivers a counting fix to history the user already has.
+    let recorded_schema =
+        app_metadata_service::get_value(conn, FACT_SCHEMA_VERSION_KEY)
+            .await
+            .map_err(AppCommandError::from)?;
+    let schema_changed = recorded_schema.as_deref() != Some(FACT_SCHEMA_VERSION);
+    let mode = if schema_changed {
+        tracing::info!(
+            from = recorded_schema.as_deref().unwrap_or("<none>"),
+            to = FACT_SCHEMA_VERSION,
+            "token usage sync: fact accounting changed, rebuilding every conversation"
+        );
+        TokenUsageSyncMode::Full
+    } else {
+        mode
+    };
+
     let mut result = TokenUsageSyncResult {
         pruned_conversations: usage_service::prune_orphaned_facts(conn)
             .await
@@ -883,6 +954,9 @@ pub async fn token_usage_sync_core(
 
     let total = stale.len() as u32;
     if total == 0 {
+        if schema_changed {
+            record_fact_schema_version(conn).await?;
+        }
         emit_event(
             emitter,
             TOKEN_USAGE_SYNC_PROGRESS_EVENT,
@@ -926,6 +1000,7 @@ pub async fn token_usage_sync_core(
                      recorded before — keeping the previous facts"
                 );
                 result.failed += 1;
+                keep_eligible_for_rebuild(conn, schema_changed, candidate.id).await;
             }
             Ok((detail, _)) => {
                 let facts = facts_from_detail(&detail, candidate.updated_at);
@@ -949,6 +1024,7 @@ pub async fn token_usage_sync_core(
                             "token usage sync: failed to write facts"
                         );
                         result.failed += 1;
+                        keep_eligible_for_rebuild(conn, schema_changed, candidate.id).await;
                     }
                 }
             }
@@ -963,6 +1039,7 @@ pub async fn token_usage_sync_core(
                     "token usage sync: failed to parse transcript"
                 );
                 result.failed += 1;
+                keep_eligible_for_rebuild(conn, schema_changed, candidate.id).await;
             }
         }
 
@@ -982,7 +1059,59 @@ pub async fn token_usage_sync_core(
         }
     }
 
+    if schema_changed {
+        record_fact_schema_version(conn).await?;
+    }
+
     Ok(result)
+}
+
+/// Keep a conversation that failed a schema rebuild eligible for the next pass.
+///
+/// The three failure arms above all leave the sync stamp untouched, which is
+/// what lets an unreadable transcript keep its recorded facts. For a
+/// conversation that was already stale that is enough — it stays stale and the
+/// next pass retries it. But a schema rebuild also re-parses conversations that
+/// are perfectly *current*, and one of those that fails would still look
+/// current afterwards: the marker advances, the pass never runs again, and it
+/// keeps serving numbers from the accounting this change exists to replace.
+///
+/// Stamping it for re-parse is what closes that door. The marker preserves both
+/// the facts and `turn_count`, so the "an empty parse must not erase recorded
+/// usage" guard stays armed. A transcript that is gone for good will now be
+/// retried by every future pass and keep counting as stale — the same thing
+/// already true of a stale conversation whose source vanished, and the honest
+/// state for rows we know are wrong but cannot re-derive.
+async fn keep_eligible_for_rebuild(
+    conn: &sea_orm::DatabaseConnection,
+    schema_changed: bool,
+    conversation_id: i32,
+) {
+    if !schema_changed {
+        return;
+    }
+    if let Err(e) = usage_service::mark_stale_for_reparse(conn, conversation_id).await {
+        tracing::warn!(
+            conversation_id,
+            error = %e,
+            "token usage sync: could not keep a failed conversation eligible for rebuild"
+        );
+    }
+}
+
+/// Mark the stored facts as produced under [`FACT_SCHEMA_VERSION`].
+///
+/// Written only after a pass has walked every conversation, so a sync
+/// interrupted halfway leaves the marker behind and the next one resumes the
+/// rebuild. Conversations that failed inside the pass are handled separately by
+/// [`keep_eligible_for_rebuild`], which stamps them so the advancing marker
+/// cannot strand them on the old accounting.
+async fn record_fact_schema_version(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<(), AppCommandError> {
+    app_metadata_service::upsert_value(conn, FACT_SCHEMA_VERSION_KEY, FACT_SCHEMA_VERSION)
+        .await
+        .map_err(AppCommandError::from)
 }
 
 // ─── Tauri commands ─────────────────────────────────────────────────────
@@ -1106,7 +1235,7 @@ mod tests {
             turn("b", Some(usage(0, 0, 0, 0)), "2026-08-01T11:00:00Z"),
             turn("c", Some(usage(10, 5, 0, 0)), "2026-08-01T12:00:00Z"),
         ];
-        let facts = facts_from_turns(&turns);
+        let facts = facts_from_turns(&turns, None);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].turn_key, "c");
         assert_eq!(facts[0].total_tokens(), 15);
@@ -1117,18 +1246,42 @@ mod tests {
     }
 
     #[test]
-    fn facts_prefer_completed_at_over_timestamp() {
-        let mut t = turn("a", Some(usage(1, 1, 0, 0)), "2026-08-01T10:00:00Z");
-        t.completed_at = Some(ts("2026-08-01T10:05:00Z"));
-        let facts = facts_from_turns(&[t]);
-        assert_eq!(facts[0].occurred_at, ts("2026-08-01T10:05:00Z"));
+    fn facts_land_when_the_usage_was_reported_not_when_the_turn_finished() {
+        // `completed_at` is the last absorbed tool result, which a single
+        // long-running command can push into the next calendar day. The tokens
+        // were spent when the assistant spoke, so that is where they land.
+        let mut t = turn("a", Some(usage(1, 1, 0, 0)), "2026-08-01T23:50:00Z");
+        t.completed_at = Some(ts("2026-08-02T09:30:00Z"));
+        let facts = facts_from_turns(&[t], None);
+        assert_eq!(facts[0].occurred_at, ts("2026-08-01T23:50:00Z"));
     }
 
     #[test]
     fn facts_fall_back_to_positional_turn_key() {
         let t = turn("", Some(usage(1, 0, 0, 0)), "2026-08-01T10:00:00Z");
-        let facts = facts_from_turns(&[t]);
+        let facts = facts_from_turns(&[t], None);
         assert_eq!(facts[0].turn_key, "turn-0");
+    }
+
+    #[test]
+    fn facts_backfill_the_session_model_only_where_turns_have_none() {
+        // The Codex shape: usage per turn, model only at the session level.
+        let mut bare = turn("a", Some(usage(10, 5, 0, 0)), "2026-08-01T10:00:00Z");
+        bare.model = None;
+        let facts = facts_from_turns(&[bare], Some("gpt-5.5"));
+        assert_eq!(facts[0].model.as_deref(), Some("gpt-5.5"));
+
+        // A turn that names its own model keeps it — a recorded mid-session
+        // switch must not be flattened to the session default.
+        let named = turn("b", Some(usage(10, 5, 0, 0)), "2026-08-01T10:00:00Z");
+        let facts = facts_from_turns(&[named], Some("gpt-5.5"));
+        assert_eq!(facts[0].model.as_deref(), Some("claude-opus-5"));
+
+        // A whitespace-only session model is no model at all.
+        let mut blank = turn("c", Some(usage(1, 0, 0, 0)), "2026-08-01T10:00:00Z");
+        blank.model = None;
+        let facts = facts_from_turns(&[blank], Some("   "));
+        assert_eq!(facts[0].model, None);
     }
 
     fn detail(turns: Vec<MessageTurn>, stats: Option<SessionStats>) -> DbConversationDetail {
@@ -1544,5 +1697,121 @@ mod tests {
         assert_eq!(normalize_tz_offset(999_999), 14 * 60);
         assert_eq!(normalize_tz_offset(-999_999), -12 * 60);
         assert_eq!(normalize_tz_offset(-330), -330);
+    }
+
+    /// `token_usage_sync_core` serializes on a process-global `try_lock`, so two
+    /// tests calling it at once would make one fail with "already running".
+    static SYNC_TESTS_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn a_changed_fact_schema_reparses_conversations_a_stamp_calls_current() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+        let _serial = SYNC_TESTS_SERIAL.lock().await;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/tu-schema").await;
+        let conv = seed_conversation(&db, folder, crate::models::AgentType::ClaudeCode).await;
+
+        // Stamp it exactly current, the state an incremental pass skips.
+        let updated_at = crate::db::entities::conversation::Entity::find_by_id(conv)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .updated_at;
+        usage_service::replace_conversation_facts(&db.conn, conv, updated_at, &[])
+            .await
+            .expect("stamp");
+        assert!(!usage_service::list_sync_candidates(&db.conn).await.expect("c")[0].is_stale());
+
+        // First pass: the recorded schema is absent, so the conversation is
+        // re-parsed even though nothing about it moved. This is what carries a
+        // counting fix to history the user already has — stale-tracking never
+        // would, because the transcript did not change, the arithmetic did.
+        let first = token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Incremental)
+            .await
+            .expect("first sync");
+        assert_eq!(first.scanned, 1);
+        assert_eq!(first.skipped, 0, "a schema change must not skip anything");
+
+        assert_eq!(
+            app_metadata_service::get_value(&db.conn, FACT_SCHEMA_VERSION_KEY)
+                .await
+                .expect("read marker")
+                .as_deref(),
+            Some(FACT_SCHEMA_VERSION)
+        );
+
+        // Second pass: the marker matches, so incremental is incremental again.
+        let second = token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Incremental)
+            .await
+            .expect("second sync");
+        assert_eq!(second.skipped, 1, "the marker must not be sticky");
+    }
+
+    #[tokio::test]
+    async fn a_conversation_that_fails_the_schema_rebuild_is_retried_not_stranded() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+
+        let _serial = SYNC_TESTS_SERIAL.lock().await;
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/tu-schema-fail").await;
+        let conv = seed_conversation(&db, folder, crate::models::AgentType::ClaudeCode).await;
+
+        // Recorded usage, stamped exactly current: the shape only a rebuild
+        // would revisit, and the shape whose transcript is unreadable now.
+        let updated_at = crate::db::entities::conversation::Entity::find_by_id(conv)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .updated_at;
+        usage_service::replace_conversation_facts(
+            &db.conn,
+            conv,
+            updated_at,
+            &[UsageFact {
+                turn_key: "t1".into(),
+                occurred_at: ts("2026-08-01T10:00:00Z"),
+                model: Some("claude-opus-5".into()),
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                duration_ms: 0,
+            }],
+        )
+        .await
+        .expect("seed facts");
+        assert!(!usage_service::list_sync_candidates(&db.conn).await.expect("c")[0].is_stale());
+
+        // The schema change selects it, the parse comes back with nothing, and
+        // the unreadable-source guard keeps the old rows rather than erasing
+        // them — so this conversation is still on the OLD accounting.
+        let first =
+            token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Incremental)
+                .await
+                .expect("first sync");
+        assert_eq!(first.failed, 1, "the unreadable transcript must not be written through");
+        assert_eq!(
+            usage_service::fetch_facts(&db.conn, &FactQuery::default(), 100)
+                .await
+                .expect("facts")
+                .len(),
+            1,
+            "its recorded usage survives"
+        );
+
+        // The regression this guards: the marker advances for everyone, so a
+        // failed conversation that still *looks* current would be skipped by
+        // every future pass and keep serving the numbers this change replaces.
+        let second =
+            token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Incremental)
+                .await
+                .expect("second sync");
+        assert_eq!(
+            second.skipped, 0,
+            "a conversation that failed the rebuild must stay eligible for it"
+        );
     }
 }
