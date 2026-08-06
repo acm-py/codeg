@@ -5,7 +5,7 @@ services:
     # and published by GitHub Actions above.
     # build: .
     ports:
-      - "3080:3080"
+      - "${CODEG_HOST_PORT:-3080}:3080"
     volumes:
       - codeg-data:/data
       # Codeg reads native agent configuration from the host home directory.
