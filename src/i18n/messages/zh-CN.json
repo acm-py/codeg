@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "无法启动实时预览",
       "officeWatchRetry": "重试",
       "officeServerInstallHint": "OfficeCLI 需安装在服务器主机上。请在服务器上运行以下命令后重试：",
-      "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。"
+      "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。",
+      "notebookCell": "单元格 {count}",
+      "notebookCells": "{count} 个单元格",
+      "notebookEmptyCell": "空单元格",
+      "notebookEmpty": "此 Notebook 没有单元格。",
+      "notebookInvalidJson": "此 Notebook 包含无效的 JSON。",
+      "notebookInvalidRoot": "此 Notebook 的文档根节点无效。",
+      "notebookInvalidCells": "此 Notebook 的单元格列表无效。"
     },
     "branchDropdown": {
       "toasts": {

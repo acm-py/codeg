@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "실시간 미리보기를 시작할 수 없습니다",
       "officeWatchRetry": "다시 시도",
       "officeServerInstallHint": "OfficeCLI는 서버 호스트에 설치해야 합니다. 서버에서 다음 명령을 실행한 후 다시 시도하세요:",
-      "officeRemoteDesktopUnsupported": "원격 데스크톱 창에서는 실시간 미리보기를 사용할 수 없습니다. Office 파일을 미리 보려면 서버의 웹 UI에서 이 작업 공간을 여세요."
+      "officeRemoteDesktopUnsupported": "원격 데스크톱 창에서는 실시간 미리보기를 사용할 수 없습니다. Office 파일을 미리 보려면 서버의 웹 UI에서 이 작업 공간을 여세요.",
+      "notebookCell": "셀 {count}",
+      "notebookCells": "셀 {count}개",
+      "notebookEmptyCell": "빈 셀",
+      "notebookEmpty": "이 노트북에는 셀이 없습니다.",
+      "notebookInvalidJson": "이 노트북의 JSON이 올바르지 않습니다.",
+      "notebookInvalidRoot": "이 노트북의 문서 루트가 올바르지 않습니다.",
+      "notebookInvalidCells": "이 노트북의 셀 목록이 올바르지 않습니다."
     },
     "branchDropdown": {
       "toasts": {

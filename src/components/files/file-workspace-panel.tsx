@@ -34,7 +34,12 @@ import {
 import { ImagePreview } from "@/components/files/image-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { OfficePreview } from "@/components/files/office-preview"
-import { isHtmlPreviewable, isOfficePreviewable } from "@/lib/language-detect"
+import { NotebookPreview } from "@/components/files/notebook-preview"
+import {
+  isHtmlPreviewable,
+  isNotebookFile,
+  isOfficePreviewable,
+} from "@/lib/language-detect"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import {
@@ -2067,6 +2072,17 @@ export function FileWorkspacePanel() {
         rootPath={previewRoot}
       />
     )
+  }
+
+  // Notebook preview. The tab content remains the original JSON text so the
+  // source editor and save path continue to operate normally.
+  if (
+    isFileTab &&
+    activeFileTab &&
+    previewFileTabIds.has(activeFileTab.id) &&
+    isNotebookFile(activeFileTab.path)
+  ) {
+    return <NotebookPreview key={activeFileTab.id} tab={activeFileTab} />
   }
 
   if (isPreviewMode && activeFileTab) {

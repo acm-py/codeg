@@ -79,6 +79,7 @@ const EXTENSION_MAP: Record<string, string> = {
 
   // Data / config
   json: "json",
+  ipynb: "json",
   jsonc: "json",
   json5: "json",
   yml: "yaml",
@@ -210,6 +211,12 @@ export function isOfficePreviewable(path: string | null | undefined): boolean {
   if (dot === -1) return false
   const ext = basename.slice(dot + 1)
   return ext === "docx" || ext === "xlsx" || ext === "pptx"
+}
+
+export function isNotebookFile(path: string | null | undefined): boolean {
+  if (!path) return false
+  const basename = path.toLowerCase().split(/[\\/]/).pop() ?? ""
+  return basename.endsWith(".ipynb")
 }
 
 export function languageFromPath(path: string): string {

@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "تعذّر بدء المعاينة المباشرة",
       "officeWatchRetry": "إعادة المحاولة",
       "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
-      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."
+      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office.",
+      "notebookCell": "الخلية {count}",
+      "notebookCells": "{count} خلايا",
+      "notebookEmptyCell": "خلية فارغة",
+      "notebookEmpty": "لا يحتوي هذا الدفتر على خلايا.",
+      "notebookInvalidJson": "يحتوي هذا الدفتر على JSON غير صالح.",
+      "notebookInvalidRoot": "جذر مستند هذا الدفتر غير صالح.",
+      "notebookInvalidCells": "قائمة خلايا هذا الدفتر غير صالحة."
     },
     "branchDropdown": {
       "toasts": {

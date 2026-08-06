@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "Não foi possível iniciar a visualização ao vivo",
       "officeWatchRetry": "Tentar novamente",
       "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
-      "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
+      "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office.",
+      "notebookCell": "Célula {count}",
+      "notebookCells": "{count} células",
+      "notebookEmptyCell": "Célula vazia",
+      "notebookEmpty": "Este notebook não tem células.",
+      "notebookInvalidJson": "Este notebook contém JSON inválido.",
+      "notebookInvalidRoot": "A raiz do documento deste notebook é inválida.",
+      "notebookInvalidCells": "A lista de células deste notebook é inválida."
     },
     "branchDropdown": {
       "toasts": {

@@ -39,6 +39,7 @@ import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import {
   isHtmlPreviewable,
   isImageFile,
+  isNotebookFile,
   isOfficePreviewable,
   languageFromPath,
 } from "@/lib/language-detect"
@@ -585,7 +586,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // but not isHtmlPreviewable) stay on source.
       if (
         nextTab.kind === "file" &&
-        (nextTab.language === "markdown" || isHtmlPreviewable(nextTab.path))
+        (nextTab.language === "markdown" ||
+          isHtmlPreviewable(nextTab.path) ||
+          isNotebookFile(nextTab.path))
       ) {
         setPreviewFileTabIds((prev) => {
           if (prev.has(nextTab.id)) return prev
@@ -899,7 +902,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   isDirty: false,
                   etag: result.etag,
                   mtimeMs: result.mtime_ms,
-                  readonly: result.readonly,
+                  readonly: isNotebookFile(absPath) ? false : result.readonly,
                   lineEnding: result.line_ending,
                   saveState: "idle",
                   saveError: null,

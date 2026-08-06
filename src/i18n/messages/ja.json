@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "ライブプレビューを開始できませんでした",
       "officeWatchRetry": "再試行",
       "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
-      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"
+      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。",
+      "notebookCell": "セル {count}",
+      "notebookCells": "{count} セル",
+      "notebookEmptyCell": "空のセル",
+      "notebookEmpty": "この Notebook にはセルがありません。",
+      "notebookInvalidJson": "この Notebook の JSON は無効です。",
+      "notebookInvalidRoot": "この Notebook のドキュメントルートは無効です。",
+      "notebookInvalidCells": "この Notebook のセル一覧は無効です。"
     },
     "branchDropdown": {
       "toasts": {

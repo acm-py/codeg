@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "Couldn't start the live preview",
       "officeWatchRetry": "Retry",
       "officeServerInstallHint": "OfficeCLI must be installed on the server host. Run this command there, then retry:",
-      "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files."
+      "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files.",
+      "notebookCell": "Cell {count}",
+      "notebookCells": "{count} cells",
+      "notebookEmptyCell": "Empty cell",
+      "notebookEmpty": "This notebook has no cells.",
+      "notebookInvalidJson": "This notebook contains invalid JSON.",
+      "notebookInvalidRoot": "This notebook has an invalid document root.",
+      "notebookInvalidCells": "This notebook has an invalid cells list."
     },
     "branchDropdown": {
       "toasts": {

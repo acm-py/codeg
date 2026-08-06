@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "Impossible de démarrer l'aperçu en direct",
       "officeWatchRetry": "Réessayer",
       "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
-      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."
+      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office.",
+      "notebookCell": "Cellule {count}",
+      "notebookCells": "{count} cellules",
+      "notebookEmptyCell": "Cellule vide",
+      "notebookEmpty": "Ce notebook ne contient aucune cellule.",
+      "notebookInvalidJson": "Ce notebook contient un JSON invalide.",
+      "notebookInvalidRoot": "La racine de ce notebook est invalide.",
+      "notebookInvalidCells": "La liste des cellules de ce notebook est invalide."
     },
     "branchDropdown": {
       "toasts": {

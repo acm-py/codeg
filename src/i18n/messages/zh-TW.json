@@ -1824,7 +1824,14 @@
       "officeWatchFailed": "無法啟動即時預覽",
       "officeWatchRetry": "重試",
       "officeServerInstallHint": "OfficeCLI 需安裝在伺服器主機上。請在伺服器上執行以下指令後重試：",
-      "officeRemoteDesktopUnsupported": "遠端桌面視窗暫不支援即時預覽。請在伺服器的 Web 介面中開啟此工作區以預覽 Office 檔案。"
+      "officeRemoteDesktopUnsupported": "遠端桌面視窗暫不支援即時預覽。請在伺服器的 Web 介面中開啟此工作區以預覽 Office 檔案。",
+      "notebookCell": "儲存格 {count}",
+      "notebookCells": "{count} 個儲存格",
+      "notebookEmptyCell": "空白儲存格",
+      "notebookEmpty": "此 Notebook 沒有儲存格。",
+      "notebookInvalidJson": "此 Notebook 包含無效的 JSON。",
+      "notebookInvalidRoot": "此 Notebook 的文件根節點無效。",
+      "notebookInvalidCells": "此 Notebook 的儲存格清單無效。"
     },
     "branchDropdown": {
       "toasts": {
