@@ -29,10 +29,12 @@ import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
+import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { SessionFeedbackSettingsSection } from "@/components/settings/session-feedback-settings"
 import { AskQuestionSettingsSection } from "@/components/settings/ask-question-settings"
 import { SessionInfoSettingsSection } from "@/components/settings/session-info-settings"
+import { ChatAuthoringSettingsSection } from "@/components/settings/chat-authoring-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
 const TERMINAL_SHELL_OPTION_CUSTOM = "custom"
@@ -388,6 +390,8 @@ export function GeneralSettings() {
           </section>
         )}
 
+        <NotificationSoundSettingsSection />
+
         <DelegationSettingsSection />
 
         <SessionFeedbackSettingsSection />
@@ -395,6 +399,8 @@ export function GeneralSettings() {
         <AskQuestionSettingsSection />
 
         <SessionInfoSettingsSection />
+
+        <ChatAuthoringSettingsSection />
       </div>
     </ScrollArea>
   )
