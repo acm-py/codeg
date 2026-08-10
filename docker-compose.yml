@@ -1,6 +1,6 @@
 services:
   codeg:
-    image: ${CODEG_IMAGE:-ghcr.io/xintaofei/codeg:latest}
+    image: ${CODEG_IMAGE:-ghcr.io/acm-py/codeg:latest}
     # Local development only; production deployment should use the image built
     # and published by GitHub Actions above.
     # build: .
