@@ -113,6 +113,10 @@ INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
 - **服务器部署**：通过环境变量配置（`CODEG_PORT`、`CODEG_HOST`、`CODEG_TOKEN`、`CODEG_DATA_DIR`、`CODEG_STATIC_DIR`）
 - **Docker 支持**：多阶段构建（Node.js + Rust），支持 `docker-compose` 一键部署
 
+### 更新后部署约定
+
+每次同步上游或完成代码更新后，必须先通过 GitHub Actions 重新构建并推送 Docker 镜像；构建成功后执行 `docker compose pull`、`docker compose up -d --force-recreate --no-build` 重启容器，并检查 `docker compose ps` 和 `http://127.0.0.1:3080/` 返回 `HTTP 200`。遵守本文件的本地构建约束，不在本机执行 Docker 镜像构建。
+
 ## 代码风格
 
 - Prettier：无分号、尾逗号（es5）、2 空格缩进、80 字符宽度
