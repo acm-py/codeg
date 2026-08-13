@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     openssh-client \
     ca-certificates \
     curl \
+    procps \
     ripgrep \
     python3 \
     python3-pip \
@@ -22,7 +23,7 @@ COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # carry an Agent body of its own.
 RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
-       @agentclientprotocol/claude-agent-acp@0.64.1 \
+       @agentclientprotocol/claude-agent-acp@0.65.0 \
        @agentclientprotocol/codex-acp@1.1.9
 # libicu76: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-trixie-slim

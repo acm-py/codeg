@@ -858,6 +858,7 @@ fn unwrap_code_mode_script(
                 sessions,
                 poll_origins,
             )),
+            status: None,
             meta: codex_script_meta(call.label.as_deref(), false, &[], false),
         }];
         register_shell_sessions(call, call_id, &joined, sessions);
@@ -893,6 +894,7 @@ fn unwrap_code_mode_script(
                     sessions,
                     poll_origins,
                 )),
+                status: None,
                 meta: codex_script_meta(call.label.as_deref(), false, &[], false),
             });
             // Announcements are read from the chunks as written: unwrapping an
@@ -938,6 +940,7 @@ fn unwrap_code_mode_script(
                     sessions,
                     poll_origins,
                 )),
+                status: None,
                 meta: codex_script_meta(
                     call.label.as_deref(),
                     // A command that ran and printed nothing is not a command
@@ -1827,6 +1830,9 @@ fn parse_codex_subagent_stats(
         lines_removed: None,
         other_tool_count: None,
         tool_calls,
+        // Codex's sub-agent rollout is folded into these stats; there is no
+        // separate session for the card to open.
+        child_session_id: None,
     })
 }
 
@@ -2211,6 +2217,7 @@ impl CodexParser {
                                                 tool_use_id: Some(id.clone()),
                                                 tool_name: marker.tool_name.to_string(),
                                                 input_preview: Some(marker.input_json),
+                                                status: None,
                                                 meta: None,
                                             },
                                             ContentBlock::ToolResult {
@@ -2588,6 +2595,7 @@ impl CodexParser {
                                                 tool_use_id,
                                                 tool_name: "Agent".to_string(),
                                                 input_preview: Some(agent_input.to_string()),
+                                                status: None,
                                                 meta: None,
                                             }],
                                             timestamp,
@@ -2649,6 +2657,7 @@ impl CodexParser {
                                                     script.summary.as_deref(),
                                                     script.call_sites,
                                                 )),
+                                                status: None,
                                                 meta: None,
                                             }],
                                             timestamp,
@@ -2710,6 +2719,7 @@ impl CodexParser {
                                                 tool_use_id,
                                                 tool_name: raw_tool_name.to_string(),
                                                 input_preview,
+                                                status: None,
                                                 meta: None,
                                             }],
                                             timestamp,
@@ -2884,6 +2894,7 @@ impl CodexParser {
                                                         tool_use_id: tool_use_id.clone(),
                                                         tool_name: "collab_agent".to_string(),
                                                         input_preview: Some(collab_input),
+                                                        status: None,
                                                         meta: None,
                                                     }],
                                                     timestamp,

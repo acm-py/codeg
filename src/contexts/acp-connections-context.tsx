@@ -3518,6 +3518,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.initializeTimeout", {
                   agent: agentLabel,
                 })
+              case "mcp_rejected_by_agent":
+                return t("backendErrors.mcpRejectedByAgent", {
+                  agent: agentLabel,
+                  message: e.message,
+                })
               case "sdk_not_installed":
                 return t("blocked.sdkMissing", { agent: agentLabel })
               case "platform_not_supported":
@@ -4988,6 +4993,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey: connectionId,
             patch,
           })
+          // Same recovery the other three snapshot consumers do
+          // (`setupAttachSubscription.onSnapshot`, `connectAsViewer`,
+          // `connect()`'s legacy branch): `delegation_started` is transient and
+          // never replayed, so a viewer opening onto a turn that ALREADY
+          // delegated (the work-task transcript dialog is the case) would
+          // otherwise establish no binding — no agent icon/label, no child
+          // sub-stream, no "待批准" badge on the sub-agent card. Idempotent
+          // against any live event for the same `parent_tool_use_id`.
+          seedDelegationsFromSnapshot(
+            patch.connectionId,
+            patch.activeDelegations,
+            patch.eventSeq
+          )
         }
         route()
       })()
@@ -4996,6 +5014,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       applyMappedEnvelope,
       consumeBufferedEvents,
       dispatch,
+      seedDelegationsFromSnapshot,
       setupAttachSubscription,
     ]
   )
