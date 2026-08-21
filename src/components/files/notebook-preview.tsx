@@ -250,6 +250,7 @@ export function NotebookPreview({ tab }: { tab: FileWorkspaceTab }) {
   const [error, setError] = useState<string | null>(null)
   const [editingMarkdown, setEditingMarkdown] = useState<number | null>(null)
   const parsed = useMemo(() => parseNotebook(tab.content ?? ""), [tab.content])
+  const parsedKernelName = "error" in parsed ? "" : parsed.kernelName
   const title = tab.title || tab.path?.split(/[\\/]/).pop() || "Notebook"
   const sessionId = tab.id
   const busy =
@@ -325,12 +326,12 @@ export function NotebookPreview({ tab }: { tab: FileWorkspaceTab }) {
       sessionId,
       notebookPath: tab.path,
       cwd: path.rootPath,
-      kernelName: (kernelName ?? parsed.kernelName) || undefined,
+      kernelName: (kernelName ?? parsedKernelName) || undefined,
     })
     kernelStartedRef.current = true
     setKernelStarted(true)
     setKernelState(session.state)
-  }, [kernelName, parsed.kernelName, sessionId, t, tab.path])
+  }, [kernelName, parsedKernelName, sessionId, t, tab.path])
 
   const runCell = useCallback(
     async (index: number, code: string) => {
