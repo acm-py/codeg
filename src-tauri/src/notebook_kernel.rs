@@ -485,43 +485,37 @@ impl Session {
 
     async fn read_stdout(&self, stdout: tokio::process::ChildStdout) {
         let mut lines = BufReader::new(stdout).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let message: Value = match serde_json::from_str(&line) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            tracing::warn!(target: "notebook_kernel", "invalid bridge message: {error}");
-                            self.mark_dead(format!("invalid bridge message: {error}"))
-                                .await;
-                            return;
-                        }
-                    };
-                    if message.get("kind").and_then(Value::as_str) == Some("event") {
-                        if let Some(event) = message.get("event") {
-                            self.apply_event_state(event).await;
-                            emit_event(&self.inner.emitter, NOTEBOOK_KERNEL_EVENT, event);
-                        }
-                        continue;
-                    }
-                    let Some(id) = message.get("id").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let sender = self.pending.lock().await.remove(id);
-                    let Some(sender) = sender else { continue };
-                    if message.get("kind").and_then(Value::as_str) == Some("error") {
-                        let error = message
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Notebook bridge request failed")
-                            .to_string();
-                        let _ = sender.send(Err(error));
-                    } else {
-                        let _ =
-                            sender.send(Ok(message.get("result").cloned().unwrap_or(Value::Null)));
-                    }
+        while let Ok(Some(line)) = lines.next_line().await {
+            let message: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(target: "notebook_kernel", "invalid bridge message: {error}");
+                    self.mark_dead(format!("invalid bridge message: {error}"))
+                        .await;
+                    return;
                 }
-                Ok(None) | Err(_) => break,
+            };
+            if message.get("kind").and_then(Value::as_str) == Some("event") {
+                if let Some(event) = message.get("event") {
+                    self.apply_event_state(event).await;
+                    emit_event(&self.inner.emitter, NOTEBOOK_KERNEL_EVENT, event);
+                }
+                continue;
+            }
+            let Some(id) = message.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let sender = self.pending.lock().await.remove(id);
+            let Some(sender) = sender else { continue };
+            if message.get("kind").and_then(Value::as_str) == Some("error") {
+                let error = message
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Notebook bridge request failed")
+                    .to_string();
+                let _ = sender.send(Err(error));
+            } else {
+                let _ = sender.send(Ok(message.get("result").cloned().unwrap_or(Value::Null)));
             }
         }
         self.mark_dead("Jupyter bridge exited".to_string()).await;
