@@ -20,6 +20,16 @@ export interface NotebookDocument {
 }
 
 export type NotebookParseError = "invalidJson" | "invalidRoot" | "invalidCells"
+export type NotebookEditableCellType = "markdown" | "code"
+
+type NotebookRoot = Record<string, unknown> & { cells: unknown[] }
+
+export class NotebookMutationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "NotebookMutationError"
+  }
+}
 
 function textValue(value: unknown): string {
   if (Array.isArray(value)) return value.filter((v) => typeof v === "string").join("")
@@ -35,6 +45,122 @@ function mimeText(value: unknown): string {
   } catch {
     return String(value)
   }
+}
+
+function parseNotebookRoot(content: string): NotebookRoot {
+  let value: unknown
+  try {
+    value = JSON.parse(content)
+  } catch {
+    throw new NotebookMutationError("Notebook contains invalid JSON")
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new NotebookMutationError("Notebook has an invalid root")
+  }
+  const root = value as Record<string, unknown>
+  if (!Array.isArray(root.cells)) {
+    throw new NotebookMutationError("Notebook has an invalid cells list")
+  }
+  return root as NotebookRoot
+}
+
+function notebookCellAt(root: NotebookRoot, index: number): Record<string, unknown> {
+  if (!Number.isInteger(index) || index < 0 || index >= root.cells.length) {
+    throw new NotebookMutationError("Notebook cell index is out of range")
+  }
+  const cell = root.cells[index]
+  if (!cell || typeof cell !== "object" || Array.isArray(cell)) {
+    throw new NotebookMutationError("Notebook cell is invalid")
+  }
+  return cell as Record<string, unknown>
+}
+
+function sourceLines(source: string): string[] {
+  return source === "" ? [] : source.split(/(?<=\n)/)
+}
+
+function serializeNotebook(root: NotebookRoot): string {
+  return `${JSON.stringify(root, null, 2)}\n`
+}
+
+export function mutateNotebook(
+  content: string,
+  mutation: (root: NotebookRoot) => void
+): string {
+  const root = parseNotebookRoot(content)
+  mutation(root)
+  return serializeNotebook(root)
+}
+
+export function setNotebookCellSource(
+  content: string,
+  index: number,
+  source: string
+): string {
+  return mutateNotebook(content, (root) => {
+    notebookCellAt(root, index).source = sourceLines(source)
+  })
+}
+
+export function insertNotebookCell(
+  content: string,
+  index: number,
+  type: NotebookEditableCellType
+): string {
+  return mutateNotebook(content, (root) => {
+    if (!Number.isInteger(index) || index < 0 || index > root.cells.length) {
+      throw new NotebookMutationError("Notebook cell index is out of range")
+    }
+    const cell: Record<string, unknown> = {
+      cell_type: type,
+      metadata: {},
+      source: [],
+    }
+    if (type === "code") {
+      cell.execution_count = null
+      cell.outputs = []
+    }
+    root.cells.splice(index, 0, cell)
+  })
+}
+
+export function deleteNotebookCell(content: string, index: number): string {
+  return mutateNotebook(content, (root) => {
+    notebookCellAt(root, index)
+    root.cells.splice(index, 1)
+  })
+}
+
+export function replaceNotebookCellOutputs(
+  content: string,
+  index: number,
+  outputs: unknown[]
+): string {
+  return mutateNotebook(content, (root) => {
+    notebookCellAt(root, index).outputs = outputs
+  })
+}
+
+export function appendNotebookCellOutput(
+  content: string,
+  index: number,
+  output: unknown
+): string {
+  return mutateNotebook(content, (root) => {
+    const cell = notebookCellAt(root, index)
+    const outputs = Array.isArray(cell.outputs) ? cell.outputs : []
+    cell.outputs = [...outputs, output]
+  })
+}
+
+export function setNotebookExecutionCount(
+  content: string,
+  index: number,
+  count: number | null
+): string {
+  return mutateNotebook(content, (root) => {
+    notebookCellAt(root, index).execution_count = count
+  })
 }
 
 export function normalizeNotebookOutput(output: unknown): NotebookOutput | null {
