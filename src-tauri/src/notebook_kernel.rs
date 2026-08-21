@@ -202,9 +202,12 @@ impl NotebookKernelManager {
             .await;
         match result {
             Ok(value) => {
-                let info = serde_json::from_value(value).map_err(|error| {
-                    NotebookKernelError::Bridge(format!("invalid kernel session response: {error}"))
-                })?;
+                let info: NotebookKernelSession =
+                    serde_json::from_value(value).map_err(|error| {
+                        NotebookKernelError::Bridge(format!(
+                            "invalid kernel session response: {error}"
+                        ))
+                    })?;
                 *session.info.lock().await = Some(info.clone());
                 Ok(info)
             }
@@ -457,10 +460,10 @@ impl Session {
         .map_err(|error| NotebookKernelError::Request(error.to_string()))?;
         let write_result = {
             let mut stdin = self.stdin.lock().await;
-            stdin
-                .write_all(&line)
-                .await
-                .and_then(|_| stdin.write_all(b"\n").await)
+            match stdin.write_all(&line).await {
+                Ok(()) => stdin.write_all(b"\n").await,
+                Err(error) => Err(error),
+            }
         };
         if let Err(error) = write_result {
             self.pending.lock().await.remove(&request_id);
