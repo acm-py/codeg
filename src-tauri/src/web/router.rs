@@ -424,6 +424,39 @@ pub fn build_router(
             post(handlers::files::save_file_content),
         )
         .route("/save_file_copy", post(handlers::files::save_file_copy))
+        // ─── Notebook kernels ───
+        .route(
+            "/notebook_kernel_list_specs",
+            post(handlers::notebook_kernel::notebook_kernel_list_specs),
+        )
+        .route(
+            "/notebook_kernel_start",
+            post(handlers::notebook_kernel::notebook_kernel_start),
+        )
+        .route(
+            "/notebook_kernel_execute",
+            post(handlers::notebook_kernel::notebook_kernel_execute),
+        )
+        .route(
+            "/notebook_kernel_run_all",
+            post(handlers::notebook_kernel::notebook_kernel_run_all),
+        )
+        .route(
+            "/notebook_kernel_interrupt",
+            post(handlers::notebook_kernel::notebook_kernel_interrupt),
+        )
+        .route(
+            "/notebook_kernel_restart",
+            post(handlers::notebook_kernel::notebook_kernel_restart),
+        )
+        .route(
+            "/notebook_kernel_shutdown",
+            post(handlers::notebook_kernel::notebook_kernel_shutdown),
+        )
+        .route(
+            "/notebook_kernel_input",
+            post(handlers::notebook_kernel::notebook_kernel_input),
+        )
         .route(
             "/rename_file_tree_entry",
             post(handlers::files::rename_file_tree_entry),

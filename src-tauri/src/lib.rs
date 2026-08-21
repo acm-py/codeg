@@ -29,6 +29,7 @@ pub mod keyring_store;
 pub mod logging;
 pub mod models;
 mod network;
+pub mod notebook_kernel;
 pub mod office_watch;
 pub mod parsers;
 pub mod paths;
@@ -78,7 +79,7 @@ mod tauri_app {
         system_settings, terminal as terminal_commands,
         token_usage as token_usage_commands,
         forge as forge_commands, version_control, windows, work_task as work_task_commands,
-        workspace_state as workspace_state_commands,
+        workspace_state as workspace_state_commands, notebook_kernel as notebook_kernel_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -320,6 +321,10 @@ mod tauri_app {
                 unsafe {
                     std::env::set_var("CODEG_DATA_DIR", &effective_data_dir);
                 }
+                app.manage(crate::notebook_kernel::NotebookKernelManager::new(
+                    web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    effective_data_dir.clone(),
+                ));
 
                 // `CODEG_HOME` overrides `CODEG_DATA_DIR` inside
                 // `paths::codeg_uploads_root` / `codeg_pets_root` for
@@ -1397,6 +1402,14 @@ mod tauri_app {
                 terminal_commands::terminal_resize,
                 terminal_commands::terminal_kill,
                 terminal_commands::terminal_list,
+                notebook_kernel_commands::notebook_kernel_list_specs,
+                notebook_kernel_commands::notebook_kernel_start,
+                notebook_kernel_commands::notebook_kernel_execute,
+                notebook_kernel_commands::notebook_kernel_run_all,
+                notebook_kernel_commands::notebook_kernel_interrupt,
+                notebook_kernel_commands::notebook_kernel_restart,
+                notebook_kernel_commands::notebook_kernel_shutdown,
+                notebook_kernel_commands::notebook_kernel_input,
                 mcp_commands::mcp_scan_local,
                 mcp_commands::mcp_list_marketplaces,
                 mcp_commands::mcp_search_marketplace,

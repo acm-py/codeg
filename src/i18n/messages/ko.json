@@ -2034,7 +2034,21 @@
       "notebookEmpty": "이 노트북에는 셀이 없습니다.",
       "notebookInvalidJson": "이 노트북의 JSON이 올바르지 않습니다.",
       "notebookInvalidRoot": "이 노트북의 문서 루트가 올바르지 않습니다.",
-      "notebookInvalidCells": "이 노트북의 셀 목록이 올바르지 않습니다."
+      "notebookInvalidCells": "이 노트북의 셀 목록이 올바르지 않습니다.",
+      "notebookAddCodeCell": "코드 셀 추가",
+      "notebookAddMarkdownCell": "Markdown 셀 추가",
+      "notebookDeleteCell": "셀 {count} 삭제",
+      "notebookRunCell": "셀 {count} 실행",
+      "notebookRunAll": "모두 실행",
+      "notebookInterrupt": "중단",
+      "notebookRestart": "커널 다시 시작",
+      "notebookShutdown": "커널 종료",
+      "notebookKernel": "커널",
+      "notebookSelectKernel": "커널 선택",
+      "notebookRunning": "실행 중",
+      "notebookKernelUnavailable": "Jupyter 커널을 사용할 수 없습니다",
+      "notebookInputPrompt": "Notebook 입력",
+      "notebookHtmlOutput": "Notebook HTML 출력"
     },
     "branchDropdown": {
       "toasts": {

@@ -6,27 +6,53 @@ import {
   normalizeNotebookOutput,
   parseNotebook,
   replaceNotebookCellOutputs,
+  replaceNotebookDisplayOutput,
   setNotebookCellSource,
   setNotebookExecutionCount,
 } from "./notebook"
 
 describe("notebook parsing", () => {
   it("parses cells and array sources", () => {
-    const result = parseNotebook(JSON.stringify({ cells: [{ cell_type: "code", source: ["x = 1\n"] }] }))
+    const result = parseNotebook(
+      JSON.stringify({ cells: [{ cell_type: "code", source: ["x = 1\n"] }] })
+    )
     expect("error" in result).toBe(false)
-    if (!("error" in result)) expect(result.cells[0].source).toBe("x = 1\n")
+    if (!("error" in result)) {
+      expect(result.cells[0].source).toBe("x = 1\n")
+      expect(result.kernelName).toBe("")
+    }
   })
 
   it("normalizes text, errors, and images", () => {
-    expect(normalizeNotebookOutput({ output_type: "stream", text: ["hello", "\n"] })).toMatchObject({ kind: "text", text: "hello\n" })
-    expect(normalizeNotebookOutput({ output_type: "error", ename: "ValueError", evalue: "bad" })).toMatchObject({ kind: "error" })
-    expect(normalizeNotebookOutput({ output_type: "display_data", data: { "image/png": "aGVsbG8=" } })).toMatchObject({ kind: "image", dataUrl: "data:image/png;base64,aGVsbG8=" })
+    expect(
+      normalizeNotebookOutput({ output_type: "stream", text: ["hello", "\n"] })
+    ).toMatchObject({ kind: "text", text: "hello\n" })
+    expect(
+      normalizeNotebookOutput({
+        output_type: "error",
+        ename: "ValueError",
+        evalue: "bad",
+      })
+    ).toMatchObject({ kind: "error" })
+    expect(
+      normalizeNotebookOutput({
+        output_type: "display_data",
+        data: { "image/png": "aGVsbG8=" },
+      })
+    ).toMatchObject({
+      kind: "image",
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+    })
   })
 
   it("rejects invalid roots and keeps unknown cells", () => {
     expect(parseNotebook("not json")).toEqual({ error: "invalidJson" })
-    const result = parseNotebook(JSON.stringify({ cells: [{ cell_type: "future", source: "x" }] }))
-    expect("error" in result ? result.error : result.cells[0].type).toBe("unknown")
+    const result = parseNotebook(
+      JSON.stringify({ cells: [{ cell_type: "future", source: "x" }] })
+    )
+    expect("error" in result ? result.error : result.cells[0].type).toBe(
+      "unknown"
+    )
   })
 
   it("preserves unknown notebook data while changing a cell source", () => {
@@ -91,8 +117,16 @@ describe("notebook parsing", () => {
   it("replaces and appends only target cell outputs", () => {
     const content = JSON.stringify({
       cells: [
-        { cell_type: "code", source: "first", outputs: [{ output_type: "stream", text: "keep" }] },
-        { cell_type: "code", source: "second", outputs: [{ output_type: "stream", text: "old" }] },
+        {
+          cell_type: "code",
+          source: "first",
+          outputs: [{ output_type: "stream", text: "keep" }],
+        },
+        {
+          cell_type: "code",
+          source: "second",
+          outputs: [{ output_type: "stream", text: "old" }],
+        },
       ],
     })
     const output = {
@@ -109,12 +143,49 @@ describe("notebook parsing", () => {
     })
     const result = JSON.parse(setNotebookExecutionCount(appended, 1, 79))
 
-    expect(result.cells[0].outputs).toEqual([{ output_type: "stream", text: "keep" }])
+    expect(result.cells[0].outputs).toEqual([
+      { output_type: "stream", text: "keep" },
+    ])
     expect(result.cells[1].execution_count).toBe(79)
-    expect(result.cells[1].outputs).toEqual([output, { output_type: "stream", name: "stdout", text: "done\n" }])
-    expect(parseNotebook(JSON.stringify(result)).cells[1].outputs[0]).toMatchObject({
+    expect(result.cells[1].outputs).toEqual([
+      output,
+      { output_type: "stream", name: "stdout", text: "done\n" },
+    ])
+    expect(
+      parseNotebook(JSON.stringify(result)).cells[1].outputs[0]
+    ).toMatchObject({
       kind: "html",
       text: "<table><tr><td>PBCASH</td></tr></table>",
     })
+  })
+
+  it("updates display output without discarding its surrounding cell data", () => {
+    const content = JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          source: "display(x)",
+          metadata: { keep: true },
+          outputs: [
+            {
+              output_type: "display_data",
+              data: { "text/plain": "old" },
+              transient: { display_id: "display-1" },
+            },
+          ],
+        },
+      ],
+    })
+
+    const result = JSON.parse(
+      replaceNotebookDisplayOutput(content, "display-1", {
+        output_type: "display_data",
+        data: { "text/plain": "new" },
+        transient: { display_id: "display-1" },
+      })
+    )
+
+    expect(result.cells[0].metadata).toEqual({ keep: true })
+    expect(result.cells[0].outputs[0].data["text/plain"]).toBe("new")
   })
 })

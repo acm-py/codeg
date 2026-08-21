@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libicu76 \
     && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    jupyter_client==8.6.3 ipykernel==6.29.5 \
+    && python3 -m ipykernel install --sys-prefix --name python3 --display-name "Python 3"
 COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # These packages are ACP transport adapters only. Their underlying Claude Code
 # and Codex executables are selected from host mounts at runtime; host mode
@@ -63,8 +66,8 @@ ENV CODEG_HOST=0.0.0.0
 ENV SHELL=/bin/bash
 # Docker defaults to host-agent mode. Agent processes are launched directly
 # inside this container from host directories mounted by docker-compose; this
-# image installs only the ACP adapters and does not install Agent body
-# packages, Python packages, or Agent binaries.
+# image installs only ACP adapters plus the Jupyter runtime; it does not install
+# Agent body packages or Agent binaries.
 ENV HOME=/root
 ENV CODEG_AGENT_RUNTIME=host
 ENV CODEG_ACP_ADAPTER_DIR=/opt/codeg/acp

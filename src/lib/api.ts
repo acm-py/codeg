@@ -113,6 +113,8 @@ import type {
   FilePreviewContent,
   FileEditContent,
   FileSaveResult,
+  NotebookKernelSpec,
+  NotebookKernelSession,
   WorkspaceSnapshotResponse,
   GitLogResult,
   GitLogFileChange,
@@ -3993,6 +3995,55 @@ export async function readFileBase64(
     path,
     maxBytes: maxBytes ?? null,
   })
+}
+
+export async function notebookKernelListSpecs(): Promise<NotebookKernelSpec[]> {
+  return getTransport().call("notebook_kernel_list_specs")
+}
+
+export async function notebookKernelStart(params: {
+  sessionId: string
+  notebookPath: string
+  cwd: string
+  kernelName?: string
+}): Promise<NotebookKernelSession> {
+  return getTransport().call("notebook_kernel_start", params)
+}
+
+export async function notebookKernelExecute(params: {
+  sessionId: string
+  cellIndex: number
+  code: string
+}): Promise<void> {
+  return getTransport().call("notebook_kernel_execute", params)
+}
+
+export async function notebookKernelRunAll(params: {
+  sessionId: string
+  cells: Array<{ index: number; code: string }>
+}): Promise<void> {
+  return getTransport().call("notebook_kernel_run_all", params)
+}
+
+export async function notebookKernelInterrupt(
+  sessionId: string
+): Promise<void> {
+  return getTransport().call("notebook_kernel_interrupt", { sessionId })
+}
+
+export async function notebookKernelRestart(sessionId: string): Promise<void> {
+  return getTransport().call("notebook_kernel_restart", { sessionId })
+}
+
+export async function notebookKernelShutdown(sessionId: string): Promise<void> {
+  return getTransport().call("notebook_kernel_shutdown", { sessionId })
+}
+
+export async function notebookKernelInput(params: {
+  sessionId: string
+  value: string
+}): Promise<void> {
+  return getTransport().call("notebook_kernel_input", params)
 }
 
 // Workspace-confined base64 read: `path` is relative to `rootPath` and is

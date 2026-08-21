@@ -17,6 +17,7 @@ export interface NotebookDocument {
   cells: NotebookCell[]
   language: string
   kernel: string
+  kernelName: string
 }
 
 export type NotebookParseError = "invalidJson" | "invalidRoot" | "invalidCells"
@@ -32,7 +33,8 @@ export class NotebookMutationError extends Error {
 }
 
 function textValue(value: unknown): string {
-  if (Array.isArray(value)) return value.filter((v) => typeof v === "string").join("")
+  if (Array.isArray(value))
+    return value.filter((v) => typeof v === "string").join("")
   return typeof value === "string" ? value : ""
 }
 
@@ -64,7 +66,10 @@ function parseNotebookRoot(content: string): NotebookRoot {
   return root as NotebookRoot
 }
 
-function notebookCellAt(root: NotebookRoot, index: number): Record<string, unknown> {
+function notebookCellAt(
+  root: NotebookRoot,
+  index: number
+): Record<string, unknown> {
   if (!Number.isInteger(index) || index < 0 || index >= root.cells.length) {
     throw new NotebookMutationError("Notebook cell index is out of range")
   }
@@ -163,14 +168,52 @@ export function setNotebookExecutionCount(
   })
 }
 
-export function normalizeNotebookOutput(output: unknown): NotebookOutput | null {
+export function replaceNotebookDisplayOutput(
+  content: string,
+  displayId: string,
+  output: unknown
+): string {
+  return mutateNotebook(content, (root) => {
+    for (const rawCell of root.cells) {
+      if (!rawCell || typeof rawCell !== "object" || Array.isArray(rawCell))
+        continue
+      const cell = rawCell as Record<string, unknown>
+      if (!Array.isArray(cell.outputs)) continue
+      cell.outputs = cell.outputs.map((rawOutput) => {
+        if (
+          !rawOutput ||
+          typeof rawOutput !== "object" ||
+          Array.isArray(rawOutput)
+        ) {
+          return rawOutput
+        }
+        const transient = (rawOutput as Record<string, unknown>).transient
+        if (
+          transient &&
+          typeof transient === "object" &&
+          (transient as Record<string, unknown>).display_id === displayId
+        ) {
+          return output
+        }
+        return rawOutput
+      })
+    }
+  })
+}
+
+export function normalizeNotebookOutput(
+  output: unknown
+): NotebookOutput | null {
   if (!output || typeof output !== "object") return null
   const item = output as Record<string, unknown>
-  const outputType = typeof item.output_type === "string" ? item.output_type : ""
+  const outputType =
+    typeof item.output_type === "string" ? item.output_type : ""
 
   if (outputType === "error") {
     const traceback = textValue(item.traceback)
-    const message = [item.ename, item.evalue].filter((v) => typeof v === "string").join(": ")
+    const message = [item.ename, item.evalue]
+      .filter((v) => typeof v === "string")
+      .join(": ")
     return { kind: "error", text: traceback || message || "Execution error" }
   }
 
@@ -196,12 +239,21 @@ export function normalizeNotebookOutput(output: unknown): NotebookOutput | null 
       dataUrl,
     }
   }
-  if (typeof bundle["text/html"] === "string" || Array.isArray(bundle["text/html"])) {
-    return { kind: "html", mime: "text/html", text: mimeText(bundle["text/html"]) }
+  if (
+    typeof bundle["text/html"] === "string" ||
+    Array.isArray(bundle["text/html"])
+  ) {
+    return {
+      kind: "html",
+      mime: "text/html",
+      text: mimeText(bundle["text/html"]),
+    }
   }
   const json = bundle["application/json"]
-  if (json !== undefined) return { kind: "json", mime: "application/json", text: mimeText(json) }
-  if (bundle["text/plain"] !== undefined) return { kind: "text", text: mimeText(bundle["text/plain"]) }
+  if (json !== undefined)
+    return { kind: "json", mime: "application/json", text: mimeText(json) }
+  if (bundle["text/plain"] !== undefined)
+    return { kind: "text", text: mimeText(bundle["text/plain"]) }
   return null
 }
 
@@ -221,20 +273,29 @@ export function parseNotebook(
   const kernelspec = (metadata.kernelspec ?? {}) as Record<string, unknown>
   const languageInfo = (metadata.language_info ?? {}) as Record<string, unknown>
   const language = String(languageInfo.name ?? kernelspec.language ?? "")
+  const kernelName = String(kernelspec.name ?? "")
   const kernel = String(kernelspec.display_name ?? kernelspec.name ?? "")
 
   return {
     language,
+    kernelName,
     kernel,
     cells: root.cells.map((raw): NotebookCell => {
-      const cell = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
+      const cell =
+        raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
       const type = cell.cell_type
-      const normalizedType = type === "markdown" || type === "code" || type === "raw" ? type : "unknown"
+      const normalizedType =
+        type === "markdown" || type === "code" || type === "raw"
+          ? type
+          : "unknown"
       const metadata = (cell.metadata ?? {}) as Record<string, unknown>
       const cellLanguage = (metadata.language ?? language) as string
-      const executionCount = typeof cell.execution_count === "number" ? cell.execution_count : null
+      const executionCount =
+        typeof cell.execution_count === "number" ? cell.execution_count : null
       const outputs = Array.isArray(cell.outputs)
-        ? cell.outputs.map(normalizeNotebookOutput).filter((output): output is NotebookOutput => output !== null)
+        ? cell.outputs
+            .map(normalizeNotebookOutput)
+            .filter((output): output is NotebookOutput => output !== null)
         : []
       return {
         type: normalizedType,

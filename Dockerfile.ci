@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libicu76 \
     && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    jupyter_client==8.6.3 ipykernel==6.29.5 \
+    && python3 -m ipykernel install --sys-prefix --name python3 --display-name "Python 3"
 COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # These packages provide only the ACP transport adapters. The Claude Code and
 # Codex executables are supplied by host mounts at runtime; omit their

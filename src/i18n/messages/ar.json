@@ -2034,7 +2034,21 @@
       "notebookEmpty": "لا يحتوي هذا الدفتر على خلايا.",
       "notebookInvalidJson": "يحتوي هذا الدفتر على JSON غير صالح.",
       "notebookInvalidRoot": "جذر مستند هذا الدفتر غير صالح.",
-      "notebookInvalidCells": "قائمة خلايا هذا الدفتر غير صالحة."
+      "notebookInvalidCells": "قائمة خلايا هذا الدفتر غير صالحة.",
+      "notebookAddCodeCell": "إضافة خلية برمجية",
+      "notebookAddMarkdownCell": "إضافة خلية Markdown",
+      "notebookDeleteCell": "حذف الخلية {count}",
+      "notebookRunCell": "تشغيل الخلية {count}",
+      "notebookRunAll": "تشغيل الكل",
+      "notebookInterrupt": "مقاطعة",
+      "notebookRestart": "إعادة تشغيل النواة",
+      "notebookShutdown": "إيقاف النواة",
+      "notebookKernel": "النواة",
+      "notebookSelectKernel": "اختر النواة",
+      "notebookRunning": "قيد التشغيل",
+      "notebookKernelUnavailable": "نواة Jupyter غير متاحة",
+      "notebookInputPrompt": "إدخال Notebook",
+      "notebookHtmlOutput": "مخرجات Notebook HTML"
     },
     "branchDropdown": {
       "toasts": {

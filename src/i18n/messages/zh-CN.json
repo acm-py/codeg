@@ -2034,7 +2034,21 @@
       "notebookEmpty": "此 Notebook 没有单元格。",
       "notebookInvalidJson": "此 Notebook 包含无效的 JSON。",
       "notebookInvalidRoot": "此 Notebook 的文档根节点无效。",
-      "notebookInvalidCells": "此 Notebook 的单元格列表无效。"
+      "notebookInvalidCells": "此 Notebook 的单元格列表无效。",
+      "notebookAddCodeCell": "添加代码单元格",
+      "notebookAddMarkdownCell": "添加 Markdown 单元格",
+      "notebookDeleteCell": "删除单元格 {count}",
+      "notebookRunCell": "运行单元格 {count}",
+      "notebookRunAll": "运行全部",
+      "notebookInterrupt": "中断",
+      "notebookRestart": "重启内核",
+      "notebookShutdown": "关闭内核",
+      "notebookKernel": "内核",
+      "notebookSelectKernel": "选择内核",
+      "notebookRunning": "运行中",
+      "notebookKernelUnavailable": "Jupyter 内核不可用",
+      "notebookInputPrompt": "Notebook 输入",
+      "notebookHtmlOutput": "Notebook HTML 输出"
     },
     "branchDropdown": {
       "toasts": {

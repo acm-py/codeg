@@ -2034,7 +2034,21 @@
       "notebookEmpty": "Dieses Notebook enthält keine Zellen.",
       "notebookInvalidJson": "Dieses Notebook enthält ungültiges JSON.",
       "notebookInvalidRoot": "Der Dokumentstamm dieses Notebooks ist ungültig.",
-      "notebookInvalidCells": "Die Zellliste dieses Notebooks ist ungültig."
+      "notebookInvalidCells": "Die Zellliste dieses Notebooks ist ungültig.",
+      "notebookAddCodeCell": "Codezelle hinzufügen",
+      "notebookAddMarkdownCell": "Markdown-Zelle hinzufügen",
+      "notebookDeleteCell": "Zelle {count} löschen",
+      "notebookRunCell": "Zelle {count} ausführen",
+      "notebookRunAll": "Alle ausführen",
+      "notebookInterrupt": "Unterbrechen",
+      "notebookRestart": "Kernel neu starten",
+      "notebookShutdown": "Kernel beenden",
+      "notebookKernel": "Kernel",
+      "notebookSelectKernel": "Kernel auswählen",
+      "notebookRunning": "Wird ausgeführt",
+      "notebookKernelUnavailable": "Jupyter-Kernel ist nicht verfügbar",
+      "notebookInputPrompt": "Notebook-Eingabe",
+      "notebookHtmlOutput": "Notebook-HTML-Ausgabe"
     },
     "branchDropdown": {
       "toasts": {

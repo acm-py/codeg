@@ -3506,6 +3506,51 @@ export interface FileSaveResult {
   line_ending: "lf" | "crlf" | "mixed" | "none"
 }
 
+export type NotebookKernelState =
+  | "idle"
+  | "starting"
+  | "busy"
+  | "interrupting"
+  | "dead"
+  | "unavailable"
+
+export interface NotebookKernelSpec {
+  name: string
+  displayName: string
+  language: string | null
+}
+
+export interface NotebookKernelSession {
+  sessionId: string
+  notebookPath: string
+  kernelName: string
+  state: NotebookKernelState
+}
+
+export type NotebookKernelEvent =
+  | { kind: "state"; sessionId: string; state: NotebookKernelState }
+  | { kind: "clearOutputs"; sessionId: string; cellIndex: number }
+  | { kind: "output"; sessionId: string; cellIndex: number; output: unknown }
+  | {
+      kind: "executionCount"
+      sessionId: string
+      cellIndex: number
+      count: number | null
+    }
+  | {
+      kind: "updateDisplay"
+      sessionId: string
+      displayId: string
+      output: unknown
+    }
+  | {
+      kind: "inputRequest"
+      sessionId: string
+      prompt: string
+      password: boolean
+    }
+  | { kind: "error"; sessionId: string; message: string }
+
 export interface WorkspaceGitEntry {
   path: string
   status: string
