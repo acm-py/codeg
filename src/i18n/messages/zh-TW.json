@@ -2034,7 +2034,21 @@
       "notebookEmpty": "此 Notebook 沒有儲存格。",
       "notebookInvalidJson": "此 Notebook 包含無效的 JSON。",
       "notebookInvalidRoot": "此 Notebook 的文件根節點無效。",
-      "notebookInvalidCells": "此 Notebook 的儲存格清單無效。"
+      "notebookInvalidCells": "此 Notebook 的儲存格清單無效。",
+      "notebookAddCodeCell": "新增程式碼儲存格",
+      "notebookAddMarkdownCell": "新增 Markdown 儲存格",
+      "notebookDeleteCell": "刪除儲存格 {count}",
+      "notebookRunCell": "執行儲存格 {count}",
+      "notebookRunAll": "全部執行",
+      "notebookInterrupt": "中斷",
+      "notebookRestart": "重新啟動核心",
+      "notebookShutdown": "關閉核心",
+      "notebookKernel": "核心",
+      "notebookSelectKernel": "選擇核心",
+      "notebookRunning": "執行中",
+      "notebookKernelUnavailable": "Jupyter 核心不可用",
+      "notebookInputPrompt": "Notebook 輸入",
+      "notebookHtmlOutput": "Notebook HTML 輸出"
     },
     "branchDropdown": {
       "toasts": {

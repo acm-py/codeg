@@ -20,6 +20,7 @@ pub mod forge;
 pub mod git;
 pub mod logging;
 pub mod mcp;
+pub mod notebook_kernel;
 pub mod model_provider;
 pub mod office_tools;
 pub mod office_watch_proxy;

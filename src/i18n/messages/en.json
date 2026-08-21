@@ -2034,7 +2034,21 @@
       "notebookEmpty": "This notebook has no cells.",
       "notebookInvalidJson": "This notebook contains invalid JSON.",
       "notebookInvalidRoot": "This notebook has an invalid document root.",
-      "notebookInvalidCells": "This notebook has an invalid cells list."
+      "notebookInvalidCells": "This notebook has an invalid cells list.",
+      "notebookAddCodeCell": "Add code cell",
+      "notebookAddMarkdownCell": "Add Markdown cell",
+      "notebookDeleteCell": "Delete cell {count}",
+      "notebookRunCell": "Run cell {count}",
+      "notebookRunAll": "Run all",
+      "notebookInterrupt": "Interrupt",
+      "notebookRestart": "Restart kernel",
+      "notebookShutdown": "Shut down kernel",
+      "notebookKernel": "Kernel",
+      "notebookSelectKernel": "Select kernel",
+      "notebookRunning": "Running",
+      "notebookKernelUnavailable": "Jupyter kernel is unavailable",
+      "notebookInputPrompt": "Notebook input",
+      "notebookHtmlOutput": "Notebook HTML output"
     },
     "branchDropdown": {
       "toasts": {

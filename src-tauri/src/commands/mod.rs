@@ -20,6 +20,7 @@ pub mod folders;
 pub mod forge;
 pub mod logging;
 pub mod mcp;
+pub mod notebook_kernel;
 pub mod model_provider;
 pub mod office_tools;
 #[cfg(feature = "tauri-runtime")]

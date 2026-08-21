@@ -768,6 +768,10 @@ pub(crate) async fn do_start_web_server_tauri(
         },
         connection_manager: (*app.state::<crate::acp::manager::ConnectionManager>()).clone_ref(),
         terminal_manager: (*app.state::<crate::terminal::manager::TerminalManager>()).clone_ref(),
+        notebook_kernel_manager: app
+            .state::<crate::notebook_kernel::NotebookKernelManager>()
+            .inner()
+            .clone(),
         event_broadcaster: app
             .state::<Arc<crate::web::event_bridge::WebEventBroadcaster>>()
             .inner()

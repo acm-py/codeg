@@ -2034,7 +2034,21 @@
       "notebookEmpty": "この Notebook にはセルがありません。",
       "notebookInvalidJson": "この Notebook の JSON は無効です。",
       "notebookInvalidRoot": "この Notebook のドキュメントルートは無効です。",
-      "notebookInvalidCells": "この Notebook のセル一覧は無効です。"
+      "notebookInvalidCells": "この Notebook のセル一覧は無効です。",
+      "notebookAddCodeCell": "コードセルを追加",
+      "notebookAddMarkdownCell": "Markdown セルを追加",
+      "notebookDeleteCell": "セル {count} を削除",
+      "notebookRunCell": "セル {count} を実行",
+      "notebookRunAll": "すべて実行",
+      "notebookInterrupt": "中断",
+      "notebookRestart": "カーネルを再起動",
+      "notebookShutdown": "カーネルを終了",
+      "notebookKernel": "カーネル",
+      "notebookSelectKernel": "カーネルを選択",
+      "notebookRunning": "実行中",
+      "notebookKernelUnavailable": "Jupyter カーネルを利用できません",
+      "notebookInputPrompt": "Notebook 入力",
+      "notebookHtmlOutput": "Notebook HTML 出力"
     },
     "branchDropdown": {
       "toasts": {

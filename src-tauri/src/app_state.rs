@@ -8,6 +8,7 @@ use crate::acp::InternalEventBus;
 use crate::chat_channel::manager::ChatChannelManager;
 use crate::db::AppDatabase;
 use crate::pet_state_mapper::PetStateHandle;
+use crate::notebook_kernel::NotebookKernelManager;
 use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use crate::web::WebServerState;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub db: AppDatabase,
     pub connection_manager: ConnectionManager,
     pub terminal_manager: TerminalManager,
+    pub notebook_kernel_manager: NotebookKernelManager,
     pub event_broadcaster: Arc<WebEventBroadcaster>,
     /// Process-wide bus for typed `Arc<EventEnvelope>` delivery to
     /// in-process consumers (lifecycle, pet state mapper, chat-channel
@@ -226,6 +228,7 @@ impl AppState {
             db,
             connection_manager,
             terminal_manager: default_terminal_manager(),
+            notebook_kernel_manager: NotebookKernelManager::new(emitter.clone(), data_dir.clone()),
             event_broadcaster: broadcaster,
             acp_event_bus,
             emitter,

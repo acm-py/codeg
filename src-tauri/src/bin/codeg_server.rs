@@ -275,6 +275,10 @@ async fn async_main() -> ExitCode {
         db,
         connection_manager,
         terminal_manager: codeg_lib::app_state::default_terminal_manager(),
+        notebook_kernel_manager: codeg_lib::notebook_kernel::NotebookKernelManager::new(
+            emitter.clone(),
+            data_dir.clone(),
+        ),
         event_broadcaster: broadcaster,
         acp_event_bus: acp_event_bus.clone(),
         emitter,

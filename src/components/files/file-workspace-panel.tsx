@@ -2074,14 +2074,10 @@ export function FileWorkspacePanel() {
     )
   }
 
-  // Notebook preview. The tab content remains the original JSON text so the
-  // source editor and save path continue to operate normally.
-  if (
-    isFileTab &&
-    activeFileTab &&
-    previewFileTabIds.has(activeFileTab.id) &&
-    isNotebookFile(activeFileTab.path)
-  ) {
+  // Notebook files always use their editable rendered workspace. The tab
+  // content stays JSON so existing dirty-state and save handling remain the
+  // only persistence path.
+  if (isFileTab && activeFileTab && isNotebookFile(activeFileTab.path)) {
     return <NotebookPreview key={activeFileTab.id} tab={activeFileTab} />
   }
 

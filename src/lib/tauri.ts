@@ -48,6 +48,8 @@ import type {
   FilePreviewContent,
   FileEditContent,
   FileSaveResult,
+  NotebookKernelSpec,
+  NotebookKernelSession,
   WorkspaceSnapshotResponse,
   GitLogResult,
   AvailableTerminalShells,
@@ -1167,6 +1169,55 @@ export async function readFileBase64(
   maxBytes?: number
 ): Promise<string> {
   return invoke("read_file_base64", { path, maxBytes: maxBytes ?? null })
+}
+
+export async function notebookKernelListSpecs(): Promise<NotebookKernelSpec[]> {
+  return invoke("notebook_kernel_list_specs")
+}
+
+export async function notebookKernelStart(params: {
+  sessionId: string
+  notebookPath: string
+  cwd: string
+  kernelName?: string
+}): Promise<NotebookKernelSession> {
+  return invoke("notebook_kernel_start", { request: params })
+}
+
+export async function notebookKernelExecute(params: {
+  sessionId: string
+  cellIndex: number
+  code: string
+}): Promise<void> {
+  return invoke("notebook_kernel_execute", { request: params })
+}
+
+export async function notebookKernelRunAll(params: {
+  sessionId: string
+  cells: Array<{ index: number; code: string }>
+}): Promise<void> {
+  return invoke("notebook_kernel_run_all", { request: params })
+}
+
+export async function notebookKernelInterrupt(
+  sessionId: string
+): Promise<void> {
+  return invoke("notebook_kernel_interrupt", { sessionId })
+}
+
+export async function notebookKernelRestart(sessionId: string): Promise<void> {
+  return invoke("notebook_kernel_restart", { sessionId })
+}
+
+export async function notebookKernelShutdown(sessionId: string): Promise<void> {
+  return invoke("notebook_kernel_shutdown", { sessionId })
+}
+
+export async function notebookKernelInput(params: {
+  sessionId: string
+  value: string
+}): Promise<void> {
+  return invoke("notebook_kernel_input", { request: params })
 }
 
 export async function readFilePreview(

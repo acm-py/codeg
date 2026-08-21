@@ -25,8 +25,17 @@ import {
   readFilePreview,
   saveFileContent,
   saveFileCopy,
+  notebookKernelInput,
+  notebookKernelShutdown,
 } from "@/lib/api"
-import type { FileEditContent } from "@/lib/types"
+import {
+  appendNotebookCellOutput,
+  replaceNotebookCellOutputs,
+  replaceNotebookDisplayOutput,
+  setNotebookExecutionCount,
+} from "@/lib/notebook"
+import { subscribe } from "@/lib/platform"
+import type { FileEditContent, NotebookKernelEvent } from "@/lib/types"
 import {
   expandHomePath,
   findOwningFolder,
@@ -260,6 +269,13 @@ function fileName(path: string): string {
 
 function isDirtyFileTab(tab: FileWorkspaceTab): boolean {
   return tab.kind === "file" && Boolean(tab.isDirty)
+}
+
+function stopNotebookKernelForClosedTab(tab: FileWorkspaceTab) {
+  if (tab.kind !== "file" || !isNotebookFile(tab.path)) return
+  // The backend already tolerates a dead/expired session. This is deliberately
+  // fire-and-forget so tab closure cannot be blocked by a kernel subprocess.
+  void notebookKernelShutdown(tab.id).catch(() => {})
 }
 
 // Share one string instance when the git base equals the working copy —
@@ -1870,6 +1886,68 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [updateFileTabContent]
   )
 
+  useEffect(() => {
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    void subscribe<NotebookKernelEvent>("notebook-kernel://event", (event) => {
+      if (event.kind === "inputRequest") {
+        const value = window.prompt(event.prompt || "Notebook input")
+        void notebookKernelInput({
+          sessionId: event.sessionId,
+          value: value ?? "",
+        }).catch(() => {})
+        return
+      }
+      if (
+        event.kind !== "clearOutputs" &&
+        event.kind !== "output" &&
+        event.kind !== "executionCount" &&
+        event.kind !== "updateDisplay"
+      ) {
+        return
+      }
+      const tab = fileTabsRef.current.find(
+        (candidate) =>
+          candidate.id === event.sessionId && candidate.kind === "file"
+      )
+      if (!tab) return
+      try {
+        const content =
+          event.kind === "clearOutputs"
+            ? replaceNotebookCellOutputs(tab.content, event.cellIndex, [])
+            : event.kind === "output"
+              ? appendNotebookCellOutput(
+                  tab.content,
+                  event.cellIndex,
+                  event.output
+                )
+              : event.kind === "executionCount"
+                ? setNotebookExecutionCount(
+                    tab.content,
+                    event.cellIndex,
+                    event.count
+                  )
+                : replaceNotebookDisplayOutput(
+                    tab.content,
+                    event.displayId,
+                    event.output
+                  )
+        updateFileTabContent(event.sessionId, content)
+      } catch {
+        // A malformed or stale event must not replace an unsaved file tab.
+      }
+    })
+      .then((cleanup) => {
+        if (disposed) cleanup()
+        else unsubscribe = cleanup
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unsubscribe?.()
+    }
+  }, [updateFileTabContent])
+
   const saveFileTab = useCallback(
     async (tabId: string, options?: { force?: boolean }): Promise<boolean> => {
       if (composingFileTabIdsRef.current.has(tabId)) {
@@ -2149,6 +2227,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           if (!confirmed) return prev
         }
 
+        stopNotebookKernelForClosedTab(tab)
+
         const next = prev.filter((candidate) => candidate.id !== tabId)
 
         setActiveFileTabId((current) => {
@@ -2197,6 +2277,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
         for (const closing of closingTabs) {
           inFlightLoadsRef.current.delete(closing.id)
+          stopNotebookKernelForClosedTab(closing)
         }
 
         setActiveFileTabId(tabId)
@@ -2215,6 +2296,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
 
       inFlightLoadsRef.current.clear()
+      for (const tab of prev) stopNotebookKernelForClosedTab(tab)
       setActiveFileTabId(null)
       setPreviewFileTabIds(new Set())
       activateConversationPane()

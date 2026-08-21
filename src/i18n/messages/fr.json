@@ -2034,7 +2034,21 @@
       "notebookEmpty": "Ce notebook ne contient aucune cellule.",
       "notebookInvalidJson": "Ce notebook contient un JSON invalide.",
       "notebookInvalidRoot": "La racine de ce notebook est invalide.",
-      "notebookInvalidCells": "La liste des cellules de ce notebook est invalide."
+      "notebookInvalidCells": "La liste des cellules de ce notebook est invalide.",
+      "notebookAddCodeCell": "Ajouter une cellule de code",
+      "notebookAddMarkdownCell": "Ajouter une cellule Markdown",
+      "notebookDeleteCell": "Supprimer la cellule {count}",
+      "notebookRunCell": "Exécuter la cellule {count}",
+      "notebookRunAll": "Tout exécuter",
+      "notebookInterrupt": "Interrompre",
+      "notebookRestart": "Redémarrer le noyau",
+      "notebookShutdown": "Arrêter le noyau",
+      "notebookKernel": "Noyau",
+      "notebookSelectKernel": "Sélectionner le noyau",
+      "notebookRunning": "En cours",
+      "notebookKernelUnavailable": "Le noyau Jupyter est indisponible",
+      "notebookInputPrompt": "Entrée Notebook",
+      "notebookHtmlOutput": "Sortie HTML du Notebook"
     },
     "branchDropdown": {
       "toasts": {

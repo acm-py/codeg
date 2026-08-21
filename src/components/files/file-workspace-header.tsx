@@ -3,7 +3,7 @@
 import { Code, ExternalLink, Eye } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { openPath } from "@/lib/platform"
-import { isHtmlPreviewable, isNotebookFile } from "@/lib/language-detect"
+import { isHtmlPreviewable } from "@/lib/language-detect"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -38,8 +38,7 @@ export function FileWorkspaceHeader() {
   const canPreview =
     activeFileTab.kind === "file" &&
     (activeFileTab.language === "markdown" ||
-      isHtmlPreviewable(activeFileTab.path) ||
-      isNotebookFile(activeFileTab.path))
+      isHtmlPreviewable(activeFileTab.path))
   const canOpenInBrowser =
     activeFileTab.kind === "file" && isHtmlPreviewable(activeFileTab.path)
   const isPreviewActive =
