@@ -763,7 +763,7 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -832,6 +832,27 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
+
+      - name: Export Docker image archive
+        id: docker-archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/hmb-codeg:${{ steps.version.outputs.version }}"
+          archive="hmb-codeg-${{ steps.version.outputs.version }}-linux-amd64.tar.gz"
+          docker pull "$image"
+          docker save "$image" | gzip -9 > "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Docker image archive to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "${{ steps.docker-archive.outputs.archive }}" \
+            "${{ steps.docker-archive.outputs.archive }}.sha256" \
+            --clobber
 
   publish-release:
     needs:
