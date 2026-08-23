@@ -858,11 +858,11 @@ jobs:
         run: |
           {
             echo "tags<<EOF"
-            echo "ghcr.io/${GITHUB_REPOSITORY}:${{ steps.version.outputs.version }}"
-            echo "ghcr.io/${GITHUB_REPOSITORY}:latest"
+            echo "ghcr.io/${GITHUB_REPOSITORY_OWNER}/hmb-codeg:${{ steps.version.outputs.version }}"
+            echo "ghcr.io/${GITHUB_REPOSITORY_OWNER}/hmb-codeg:latest"
             if [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]]; then
-              echo "${DOCKERHUB_USERNAME}/codeg:${{ steps.version.outputs.version }}"
-              echo "${DOCKERHUB_USERNAME}/codeg:latest"
+              echo "${DOCKERHUB_USERNAME}/hmb-codeg:${{ steps.version.outputs.version }}"
+              echo "${DOCKERHUB_USERNAME}/hmb-codeg:latest"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"

@@ -7,7 +7,7 @@ ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 PORT="${CODEG_PORT:-3080}"
 HOST_HOME="${CODEG_HOST_HOME:-${HOME:-}}"
 BREW_HOME="${CODEG_HOST_BREW_HOME:-}"
-IMAGE="${CODEG_IMAGE:-ghcr.io/xintaofei/codeg:latest}"
+IMAGE="${CODEG_IMAGE:-ghcr.io/acm-py/hmb-codeg:latest}"
 ENV_FILE=""
 NO_PULL=0
 
