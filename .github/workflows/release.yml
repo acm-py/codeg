@@ -172,24 +172,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "macOS x64"
-            runner: "macos-latest"
-            target: "x86_64-apple-darwin"
-          - name: "macOS arm64"
-            runner: "macos-latest"
-            target: "aarch64-apple-darwin"
           - name: "Linux x64"
             runner: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
-          - name: "Linux arm64"
-            runner: "ubuntu-22.04"
-            target: "aarch64-unknown-linux-gnu"
-          - name: "Windows x64"
-            runner: "windows-2022"
-            target: "x86_64-pc-windows-msvc"
-          - name: "Windows arm64"
-            runner: "windows-latest"
-            target: "aarch64-pc-windows-msvc"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -578,22 +563,6 @@ jobs:
             runner: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             artifact: "codeg-server-linux-x64"
-          - name: "Linux arm64"
-            runner: "ubuntu-22.04"
-            target: "aarch64-unknown-linux-gnu"
-            artifact: "codeg-server-linux-arm64"
-          - name: "macOS x64"
-            runner: "macos-latest"
-            target: "x86_64-apple-darwin"
-            artifact: "codeg-server-darwin-x64"
-          - name: "macOS arm64"
-            runner: "macos-latest"
-            target: "aarch64-apple-darwin"
-            artifact: "codeg-server-darwin-arm64"
-          - name: "Windows x64"
-            runner: "windows-2022"
-            target: "x86_64-pc-windows-msvc"
-            artifact: "codeg-server-windows-x64"
     runs-on: ${{ matrix.runner }}
     env:
       # Forks that only publish Docker images may not have the updater signing
@@ -805,31 +774,19 @@ jobs:
           name: codeg-server-linux-x64
           path: artifacts/linux-x64
 
-      - name: Download Linux arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: codeg-server-linux-arm64
-          path: artifacts/linux-arm64
-
       - name: Prepare Docker build context
         run: |
           set -euo pipefail
-          mkdir -p dist/amd64 dist/arm64
+          mkdir -p dist/amd64
           cp artifacts/linux-x64/codeg-server dist/amd64/codeg-server
           cp artifacts/linux-x64/codeg-mcp dist/amd64/codeg-mcp
-          cp artifacts/linux-arm64/codeg-server dist/arm64/codeg-server
-          cp artifacts/linux-arm64/codeg-mcp dist/arm64/codeg-mcp
           cp -r artifacts/linux-x64/web dist/web
-          chmod +x dist/amd64/codeg-server dist/amd64/codeg-mcp \
-                   dist/arm64/codeg-server dist/arm64/codeg-mcp
+          chmod +x dist/amd64/codeg-server dist/amd64/codeg-mcp
           # Fail fast if any companion went missing — Docker would otherwise
           # produce an image where delegation silently degrades.
-          for f in dist/amd64/codeg-mcp dist/arm64/codeg-mcp; do
+          for f in dist/amd64/codeg-mcp; do
             test -x "$f" || { echo "FATAL: $f missing or non-exec"; exit 1; }
           done
-
-      - name: Set up QEMU (for multi-arch manifest)
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -872,7 +829,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.ci
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
 
