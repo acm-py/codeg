@@ -96,6 +96,7 @@ fn to_info(m: work_task::Model) -> WorkTaskInfo {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
         latest_progress: None,
+        compacting: false,
         created_at: m.created_at,
         updated_at: m.updated_at,
         started_at: m.started_at,
@@ -181,14 +182,20 @@ pub async fn list(
         .await?;
     let mut infos: Vec<WorkTaskInfo> = rows.into_iter().map(to_info).collect();
 
-    // Realtime progress line for live cards: the latest `agent_progress`
-    // milestone of each running/awaiting/merging task, fetched in one sweep.
+    // What a live card says it is doing: the generation's latest
+    // `agent_progress` milestone, and whether it is currently parked on a
+    // pre-prompt context compaction. Both come from the same sweep.
+    //
+    // `preparing` is in the set because a round that resumes a session spends
+    // that status on a real agent turn — the compaction, which on a full
+    // context window runs for minutes with nothing else to show for it.
     let live_ids: Vec<i32> = infos
         .iter()
         .filter(|t| {
             matches!(
                 t.status,
-                WorkTaskStatus::Running
+                WorkTaskStatus::Preparing
+                    | WorkTaskStatus::Running
                     | WorkTaskStatus::AwaitingInput
                     | WorkTaskStatus::Merging
             )
@@ -198,25 +205,70 @@ pub async fn list(
     if !live_ids.is_empty() {
         let events = work_task_event::Entity::find()
             .filter(work_task_event::Column::TaskId.is_in(live_ids))
-            .filter(work_task_event::Column::Kind.eq("agent_progress"))
+            .filter(
+                work_task_event::Column::Kind.is_in(["agent_progress", "context_compact"]),
+            )
             .order_by_asc(work_task_event::Column::Id)
             .all(conn)
             .await?;
+        // Both readings are GENERATION-SCOPED, on the `run_seq` each event
+        // carries. A retry, a follow-up and a merge each bump `run_seq`, and
+        // without this the card kept showing the PREVIOUS round's last
+        // milestone — a merge in flight narrating the work round it is landing.
+        // An event from before this was stamped carries no `run_seq` and counts
+        // for no generation; only currently-live tasks lose anything by that,
+        // and only until their next milestone.
         let mut latest: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
+        let mut compacting: std::collections::HashMap<i32, bool> =
+            std::collections::HashMap::new();
+        let by_id: std::collections::HashMap<i32, i32> =
+            infos.iter().map(|t| (t.id, t.run_seq)).collect();
         for e in events {
-            let message = e
+            let payload = e
                 .payload
                 .as_deref()
-                .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
-                .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from));
-            if let Some(message) = message {
-                latest.insert(e.task_id, message); // ascending id — last wins
+                .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok());
+            let Some(payload) = payload else { continue };
+            let of_this_run = payload
+                .get("run_seq")
+                .and_then(serde_json::Value::as_i64)
+                .zip(by_id.get(&e.task_id))
+                .is_some_and(|(seq, run_seq)| seq == *run_seq as i64);
+            if !of_this_run {
+                continue;
+            }
+            match e.kind.as_str() {
+                "agent_progress" => {
+                    if let Some(m) = payload.get("message").and_then(|m| m.as_str()) {
+                        latest.insert(e.task_id, m.to_string()); // ascending id — last wins
+                    }
+                }
+                // A compaction announces itself when the turn goes out and
+                // again when it lands, so the LAST word on this generation is
+                // the answer: `started` with nothing after it is a turn still
+                // running.
+                //
+                // Two ways to be left holding a `started` that is over, both
+                // deliberately unguarded. A launch killed mid-compaction leaves
+                // one, but its row leaves this set before anything reads it
+                // (requeued, failed, or bounced back to review). And the events
+                // are best-effort writes, so a lost outcome insert strands the
+                // flag for the rest of that generation. Neither is worth a
+                // guard: the cost is one italic line claiming work that has
+                // finished, on a card whose status is still telling the truth.
+                "context_compact" => {
+                    let started =
+                        payload.get("status").and_then(|s| s.as_str()) == Some("started");
+                    compacting.insert(e.task_id, started);
+                }
+                _ => {}
             }
         }
         for t in &mut infos {
             if let Some(m) = latest.get(&t.id) {
                 t.latest_progress = Some(m.clone());
             }
+            t.compacting = compacting.get(&t.id).copied().unwrap_or(false);
         }
     }
     Ok(infos)
@@ -1291,6 +1343,12 @@ pub async fn begin_setup(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Preparing)),
         )
+        // The previous generation's connection died with it, and this one has
+        // not spawned yet — a column still naming the dead one is what makes a
+        // `preparing` row unreadable to anything that streams from it (see
+        // `mark_preparing_live`, which publishes the live id as soon as there
+        // is one). `begin_merge` clears it for the same reason.
+        .col_expr(work_task::Column::ConnectionId, Expr::value(None::<String>))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
         .filter(work_task::Column::Id.eq(id))
         .filter(work_task::Column::Status.eq(WorkTaskStatus::Queued))
@@ -1352,6 +1410,47 @@ pub async fn abandon_setup(
     .await?;
     txn.commit().await?;
     Ok(true)
+}
+
+/// Record the live connection/conversation of a generation that is still
+/// SETTING UP — the status stays `preparing`, only the coordinates move.
+///
+/// The counterpart of [`mark_merging_live`] for every non-merge round, and it
+/// exists for the same reason: between the agent spawn and the round's own
+/// prompt a launch can spend minutes on the pre-prompt context compaction, and
+/// for all of that time the agent is really working in a session no surface can
+/// find. Publishing the pair here is what lets the board's session viewer
+/// attach to (and stream) that turn instead of showing the previous round's
+/// finished transcript.
+///
+/// Deliberately not a status change: `running` is the round's own turn, and
+/// the settle paths key off it. CAS'd on (preparing, run_seq) so a cancel or a
+/// newer generation that landed in between wins — a `false` return tells the
+/// launch to unwind rather than compact a session nobody is waiting on.
+pub async fn mark_preparing_live(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+    conversation_id: i32,
+    connection_id: &str,
+) -> Result<bool, DbError> {
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::ConversationId,
+            Expr::value(Some(conversation_id)),
+        )
+        .col_expr(
+            work_task::Column::ConnectionId,
+            Expr::value(Some(connection_id.to_string())),
+        )
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Preparing))
+        .filter(work_task::Column::RunSeq.eq(run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected == 1)
 }
 
 /// preparing → running for the given generation; binds conversation +
@@ -1485,6 +1584,27 @@ pub async fn fail(
     Ok(true)
 }
 
+/// Cancel the active generation when its agent reports a cancelled turn.
+///
+/// Unlike [`cancel`], this is an engine-owned transition: a delayed event must
+/// not overwrite a generation that has already settled for review (or a newer
+/// generation of the same task).
+pub async fn cancel_running_generation(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+        Some(run_seq),
+        "engine",
+        None,
+    )
+    .await
+}
+
 /// running/awaiting_input → review for the given generation. Captures the
 /// agent's summary and the diff-stat snapshot; also writes a `diff_stat` event
 /// when stats are present.
@@ -1536,6 +1656,33 @@ pub async fn set_verdict(
     .await?;
     txn.commit().await?;
     Ok(true)
+}
+
+/// Re-write the diff counters of a task that is ALREADY in review, without
+/// touching anything else about it (no status change, no timeline entry — the
+/// `diff_stat` event records what the settle measured and stays as it was).
+///
+/// Bound to the generation whose counters these are: a task that started
+/// another round between the read and this write must not be stamped with
+/// numbers taken from the previous one.
+pub async fn refresh_diff_stats(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+    stats: (i32, i32, i32),
+) -> Result<bool, DbError> {
+    let res = work_task::Entity::update_many()
+        .col_expr(work_task::Column::FilesChanged, Expr::value(Some(stats.0)))
+        .col_expr(work_task::Column::Additions, Expr::value(Some(stats.1)))
+        .col_expr(work_task::Column::Deletions, Expr::value(Some(stats.2)))
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Review))
+        .filter(work_task::Column::RunSeq.eq(run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected == 1)
 }
 
 pub async fn settle_review(
@@ -2287,9 +2434,40 @@ pub async fn cancel(
     id: i32,
     reason: Option<&str>,
 ) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[
+            WorkTaskStatus::Todo,
+            WorkTaskStatus::Queued,
+            WorkTaskStatus::Preparing,
+            WorkTaskStatus::Running,
+            WorkTaskStatus::AwaitingInput,
+            WorkTaskStatus::Review,
+            WorkTaskStatus::Failed,
+        ],
+        None,
+        "user",
+        reason,
+    )
+    .await
+}
+
+/// The single conditional UPDATE behind both cancels: `expected` (and, for an
+/// engine-owned transition, `run_seq`) is the CAS; `actor` / `reason` is the
+/// audit trail. One write, so the columns a cancel has to clear can never drift
+/// between the user's stop button and the engine's own.
+async fn cancel_inner(
+    conn: &DatabaseConnection,
+    id: i32,
+    expected: &[WorkTaskStatus],
+    run_seq: Option<i32>,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<bool, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
-    let res = work_task::Entity::update_many()
+    let mut update = work_task::Entity::update_many()
         .col_expr(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Canceled)),
@@ -2300,7 +2478,9 @@ pub async fn cancel(
         .col_expr(work_task::Column::PendingMerge, Expr::value(None::<String>))
         // Same reasoning for a planned start: stopping a task drops its plan,
         // so a requeue days later cannot resurrect a time nobody remembers
-        // setting and launch an agent unattended.
+        // setting and launch an agent unattended. (A running row carries no
+        // plan — every claim consumes it — so this only bites the user path,
+        // but the clear belongs to "canceled", not to one caller.)
         .col_expr(
             work_task::Column::ScheduledAt,
             Expr::value(None::<chrono::DateTime<Utc>>),
@@ -2308,18 +2488,12 @@ pub async fn cancel(
         .col_expr(work_task::Column::FinishedAt, Expr::value(Some(now)))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
-        .filter(work_task::Column::Status.is_in([
-            WorkTaskStatus::Todo,
-            WorkTaskStatus::Queued,
-            WorkTaskStatus::Preparing,
-            WorkTaskStatus::Running,
-            WorkTaskStatus::AwaitingInput,
-            WorkTaskStatus::Review,
-            WorkTaskStatus::Failed,
-        ]))
-        .filter(work_task::Column::DeletedAt.is_null())
-        .exec(&txn)
-        .await?;
+        .filter(work_task::Column::Status.is_in(expected.iter().copied()))
+        .filter(work_task::Column::DeletedAt.is_null());
+    if let Some(run_seq) = run_seq {
+        update = update.filter(work_task::Column::RunSeq.eq(run_seq));
+    }
+    let res = update.exec(&txn).await?;
     if res.rows_affected != 1 {
         txn.rollback().await?;
         return Ok(false);
@@ -2328,7 +2502,7 @@ pub async fn cancel(
         .map(str::trim)
         .filter(|r| !r.is_empty())
         .map(|r| serde_json::json!({ "reason": r }));
-    status_changed_event(&txn, id, "user", None, WorkTaskStatus::Canceled, extra).await?;
+    status_changed_event(&txn, id, actor, None, WorkTaskStatus::Canceled, extra).await?;
     txn.commit().await?;
     Ok(true)
 }
@@ -2688,6 +2862,110 @@ mod tests {
         assert_eq!(events[0].kind, "created");
     }
 
+    /// The card's live note line: whose news it is, and what it says while a
+    /// round is parked on its pre-prompt compaction.
+    #[tokio::test]
+    async fn the_live_note_belongs_to_the_current_generation() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-live-note").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let first = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, t.id, first).await.unwrap());
+        assert!(mark_running(&db.conn, t.id, first, 7, "conn-1").await.unwrap());
+        record_event(
+            &db.conn,
+            t.id,
+            "agent_progress",
+            "agent",
+            Some(serde_json::json!({ "message": "installing deps", "run_seq": first })),
+        )
+        .await
+        .unwrap();
+        let one = |v: &Vec<WorkTaskInfo>| v.iter().find(|i| i.id == t.id).cloned().unwrap();
+        let row = one(&list(&db.conn, Some(folder_id)).await.unwrap());
+        assert_eq!(row.latest_progress.as_deref(), Some("installing deps"));
+        assert!(!row.compacting);
+
+        // A merge is a NEW generation. Its card used to inherit the work
+        // round's last milestone and narrate work it is not doing.
+        assert!(settle_review(&db.conn, t.id, first, None, None).await.unwrap());
+        let merge = begin_merge(
+            &db.conn,
+            t.id,
+            &WorkTaskMergeState::default(),
+            first,
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_ne!(merge, first);
+        let row = one(&list(&db.conn, Some(folder_id)).await.unwrap());
+        assert_eq!(row.latest_progress, None, "the previous round's news is not this one's");
+
+        // The compaction announces itself when the turn goes out…
+        let compact = |status: &str| {
+            record_event(
+                &db.conn,
+                t.id,
+                "context_compact",
+                "engine",
+                Some(serde_json::json!({ "status": status, "run_seq": merge })),
+            )
+        };
+        compact("started").await.unwrap();
+        assert!(one(&list(&db.conn, Some(folder_id)).await.unwrap()).compacting);
+        // …and the outcome retires it, whatever the outcome was.
+        compact("canceled").await.unwrap();
+        assert!(!one(&list(&db.conn, Some(folder_id)).await.unwrap()).compacting);
+    }
+
+    /// `preparing` is a live status for the note line: a resumed round spends
+    /// it on the compaction turn, which is the whole reason the line exists.
+    /// A generation that never compacted must not inherit the last one's
+    /// dangling `started` (a launch killed mid-compaction leaves one).
+    #[tokio::test]
+    async fn a_preparing_round_reports_its_own_compaction_only() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-preparing-note").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let first = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, t.id, first).await.unwrap());
+        record_event(
+            &db.conn,
+            t.id,
+            "context_compact",
+            "engine",
+            Some(serde_json::json!({ "status": "started", "run_seq": first })),
+        )
+        .await
+        .unwrap();
+        let one = |v: &Vec<WorkTaskInfo>| v.iter().find(|i| i.id == t.id).cloned().unwrap();
+        let row = one(&list(&db.conn, Some(folder_id)).await.unwrap());
+        assert_eq!(row.status, WorkTaskStatus::Preparing);
+        assert!(row.compacting, "preparing is where a resumed round compacts");
+
+        // Killed mid-compaction; the sweep hands it back and the next run
+        // starts clean.
+        assert!(abandon_setup(&db.conn, t.id, first).await.unwrap());
+        let next = claim_for_run(&db.conn, t.id, WorkTaskStatus::Queued, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, t.id, next).await.unwrap());
+        assert!(
+            !one(&list(&db.conn, Some(folder_id)).await.unwrap()).compacting,
+            "a dangling `started` answers only for the generation that wrote it"
+        );
+    }
+
     #[tokio::test]
     async fn claim_cas_is_exclusive_and_bumps_run_seq() {
         let db = fresh_in_memory_db().await;
@@ -2742,6 +3020,49 @@ mod tests {
             events.iter().filter(|e| e.kind == "status_changed").count(),
             3
         );
+    }
+
+    /// What a `preparing` row's `connection_id` is allowed to mean: the LIVE
+    /// connection of the setup in progress, or nothing at all. Never the
+    /// previous generation's, which is dead by the time a new one is claimed —
+    /// a viewer that streams this status (the pre-prompt compaction is a real
+    /// agent turn) would otherwise open onto a connection that is gone.
+    #[tokio::test]
+    async fn a_preparing_row_names_the_live_connection_or_none() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-preparing-live").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, t.id, seq).await.unwrap());
+        assert!(mark_preparing_live(&db.conn, t.id, seq, 42, "conn-1").await.unwrap());
+        let row = get_model(&db.conn, t.id).await.unwrap();
+        assert_eq!(row.connection_id.as_deref(), Some("conn-1"));
+        assert_eq!(row.conversation_id, Some(42));
+        // The coordinates move; the status does not — `running` is the round's
+        // own turn, and every settle path keys off it.
+        assert_eq!(row.status, WorkTaskStatus::Preparing);
+        assert!(row.started_at.is_none());
+
+        // A stale generation cannot repoint a live row.
+        assert!(!mark_preparing_live(&db.conn, t.id, seq + 1, 99, "conn-stale")
+            .await
+            .unwrap());
+        assert_eq!(
+            get_model(&db.conn, t.id).await.unwrap().connection_id.as_deref(),
+            Some("conn-1")
+        );
+
+        // Requeued and relaunched: the next setup starts with the dead
+        // connection cleared, and publishes its own when it has one.
+        let next = claim_for_run(&db.conn, t.id, WorkTaskStatus::Preparing, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, t.id, next).await.unwrap());
+        assert!(get_model(&db.conn, t.id).await.unwrap().connection_id.is_none());
     }
 
     #[tokio::test]
@@ -3489,6 +3810,68 @@ mod tests {
         assert!(get(&db.conn, t.id).await.unwrap().last_error.is_none());
     }
 
+    /// The parked column is the ONLY carrier of the user's extra merge
+    /// instructions between the dialog and the pump's later dispatch — a drop
+    /// anywhere along park → column → parse → wire loses what they asked for
+    /// with no trace on the card or the timeline.
+    #[tokio::test]
+    async fn a_queued_merge_carries_the_users_extra_instructions() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-merge-extra").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let seq = to_review(&db, t.id).await;
+
+        let intent = WorkTaskQueuedMerge {
+            message: None,
+            delete_worktree: true,
+            instructions: Some("prefer ours on conflict".into()),
+            queued_at: Utc::now(),
+        };
+        assert!(queue_merge(&db.conn, t.id, &intent, seq, None).await.unwrap());
+
+        let raw = get_model(&db.conn, t.id)
+            .await
+            .unwrap()
+            .pending_merge
+            .expect("parked");
+        assert_eq!(
+            queued_merge(Some(raw.as_str()))
+                .expect("parses")
+                .instructions
+                .as_deref(),
+            Some("prefer ours on conflict"),
+            "this is what the pump replays into the merge generation"
+        );
+        assert_eq!(
+            get(&db.conn, t.id)
+                .await
+                .unwrap()
+                .merge_queued
+                .expect("on the wire")
+                .instructions
+                .as_deref(),
+            Some("prefer ours on conflict"),
+            "reopening the dialog has to show what is parked"
+        );
+
+        // An intent WITHOUT them serializes exactly as it did before the field
+        // existed. The queue CASes on this column's RAW text, so a key that
+        // appeared out of nowhere would make every merge parked before the
+        // upgrade miss its own claim.
+        let bare = WorkTaskQueuedMerge {
+            instructions: None,
+            ..intent
+        };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("instructions"));
+        // …and the mirror: a row parked before the upgrade still parses.
+        assert!(queued_merge(Some(
+            r#"{"message":null,"delete_worktree":true,"queued_at":"2026-08-01T00:30:00Z"}"#
+        ))
+        .expect("legacy intent parses")
+        .instructions
+        .is_none());
+    }
+
     /// The merge queue's row-level contract: an intent only lands on the exact
     /// review generation the caller validated, it survives on the row until
     /// something spends it, and a dispatch (from the pump or from a click that
@@ -3502,6 +3885,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: Some("feat: land it".into()),
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
         // Not in review yet — nothing to queue on.
@@ -3532,6 +3916,7 @@ mod tests {
         let edited = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: false,
+            instructions: None,
             queued_at: parked.queued_at,
         };
         assert!(queue_merge(&db.conn, t.id, &edited, seq, None).await.unwrap());
@@ -3591,6 +3976,7 @@ mod tests {
         let intent = |secs: i64| WorkTaskQueuedMerge {
             message: Some(format!("feat: land it {secs}")),
             delete_worktree: true,
+            instructions: None,
             queued_at: chrono::DateTime::from_timestamp(1_800_000_000 + secs, 0)
                 .expect("valid instant"),
         };
@@ -3724,6 +4110,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
         assert!(queue_merge(&db.conn, t.id, &intent, seq, None).await.unwrap());
@@ -3799,6 +4186,7 @@ mod tests {
         let intent = WorkTaskQueuedMerge {
             message: None,
             delete_worktree: true,
+            instructions: None,
             queued_at: Utc::now(),
         };
 
