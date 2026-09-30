@@ -7,6 +7,7 @@ import {
   popClosedTab,
   pushClosedTab,
   resetClosedTabStackForTests,
+  snapshotBrowserTab,
   snapshotConversationTab,
   snapshotFileTab,
 } from "./closed-tab-stack"
@@ -146,6 +147,46 @@ describe("closed tab stack", () => {
       index: 3,
       path: "/repo/a.ts",
       folderId: 2,
+    })
+  })
+
+  // A browser tab reopens at the page it was showing, not the address it was
+  // opened with — the caller reads that from the live state.
+  it("records a browser tab at its live page", () => {
+    expect(
+      snapshotBrowserTab(
+        { id: "browser:abc", folderId: 3, browser: { profile: "p-work" } },
+        "https://example.com/deep",
+        "Deep page",
+        2
+      )
+    ).toEqual({
+      kind: "browser",
+      key: "browser:abc",
+      index: 2,
+      url: "https://example.com/deep",
+      title: "Deep page",
+      folderId: 3,
+      profile: "p-work",
+    })
+  })
+
+  it("records a remote browser tab as remote", () => {
+    expect(
+      snapshotBrowserTab(
+        {
+          id: "browser:r",
+          folderId: 3,
+          browser: { profile: "default", remote: true },
+        },
+        "http://localhost:3000/",
+        "localhost:3000",
+        0
+      )
+    ).toMatchObject({
+      kind: "browser",
+      url: "http://localhost:3000/",
+      remote: true,
     })
   })
 

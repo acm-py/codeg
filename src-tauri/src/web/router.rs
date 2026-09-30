@@ -106,6 +106,14 @@ pub fn build_router(
             post(handlers::session_info::set_session_info_settings),
         )
         .route(
+            "/get_browser_tools_settings",
+            post(handlers::browser_tools::get_browser_tools_settings),
+        )
+        .route(
+            "/set_browser_tools_settings",
+            post(handlers::browser_tools::set_browser_tools_settings),
+        )
+        .route(
             "/get_chat_authoring_settings",
             post(handlers::chat_authoring::get_chat_authoring_settings),
         )
@@ -276,6 +284,22 @@ pub fn build_router(
             post(handlers::folder_links::remove_folder_link),
         )
         // ─── Canvas ───
+        .route(
+            "/canvas_list_boards",
+            post(handlers::canvas::canvas_list_boards),
+        )
+        .route(
+            "/canvas_create_board",
+            post(handlers::canvas::canvas_create_board),
+        )
+        .route(
+            "/canvas_update_board",
+            post(handlers::canvas::canvas_update_board),
+        )
+        .route(
+            "/canvas_delete_board",
+            post(handlers::canvas::canvas_delete_board),
+        )
         .route(
             "/canvas_list_nodes",
             post(handlers::canvas::canvas_list_nodes),
@@ -622,6 +646,60 @@ pub fn build_router(
             "/backup_discard_pending",
             post(handlers::backup::backup_discard_pending),
         )
+        // ─── Configuration sync ───
+        //
+        // The WebDAV half is runtime-agnostic. Local file transfer is the
+        // by-content pair: a browser has no path to name, and the payload is
+        // tens of KB, so it travels in the JSON body rather than through the
+        // upload-staging machinery above.
+        .route(
+            "/config_sync_get_settings",
+            post(handlers::config_sync::config_sync_get_settings),
+        )
+        .route(
+            "/config_sync_update_settings",
+            post(handlers::config_sync::config_sync_update_settings),
+        )
+        .route(
+            "/config_sync_get_state",
+            post(handlers::config_sync::config_sync_get_state),
+        )
+        .route(
+            "/config_sync_test_connection",
+            post(handlers::config_sync::config_sync_test_connection),
+        )
+        .route(
+            "/config_sync_upload_now",
+            post(handlers::config_sync::config_sync_upload_now),
+        )
+        .route(
+            "/config_sync_peek_remote",
+            post(handlers::config_sync::config_sync_peek_remote),
+        )
+        .route(
+            "/config_sync_download_apply",
+            post(handlers::config_sync::config_sync_download_apply),
+        )
+        .route(
+            "/config_sync_export_content",
+            post(handlers::config_sync::config_sync_export_content),
+        )
+        .route(
+            "/config_sync_peek_content",
+            post(handlers::config_sync::config_sync_peek_content),
+        )
+        .route(
+            "/config_sync_import_content",
+            post(handlers::config_sync::config_sync_import_content),
+        )
+        .route(
+            "/config_sync_list_rollbacks",
+            post(handlers::config_sync::config_sync_list_rollbacks),
+        )
+        .route(
+            "/config_sync_apply_rollback",
+            post(handlers::config_sync::config_sync_apply_rollback),
+        )
         .route(
             "/download_workspace_file",
             post(handlers::workspace_files::download_workspace_file),
@@ -839,6 +917,14 @@ pub fn build_router(
             post(handlers::acp::acp_clear_binary_cache),
         )
         .route(
+            "/acp_scan_leaked_temp",
+            post(handlers::acp::acp_scan_leaked_temp),
+        )
+        .route(
+            "/acp_reclaim_leaked_temp",
+            post(handlers::acp::acp_reclaim_leaked_temp),
+        )
+        .route(
             "/acp_update_agent_preferences",
             post(handlers::acp::acp_update_agent_preferences),
         )
@@ -881,6 +967,10 @@ pub fn build_router(
         .route(
             "/acp_load_pi_config",
             post(handlers::acp::acp_load_pi_config),
+        )
+        .route(
+            "/acp_list_pi_model_capabilities",
+            post(handlers::acp::acp_list_pi_model_capabilities),
         )
         .route(
             "/acp_load_deepseek_model_catalog",
@@ -949,6 +1039,10 @@ pub fn build_router(
         .route(
             "/acp_detect_agent_local_version",
             post(handlers::acp::acp_detect_agent_local_version),
+        )
+        .route(
+            "/acp_fetch_agent_latest_release",
+            post(handlers::acp::acp_fetch_agent_latest_release),
         )
         .route(
             "/acp_prepare_npx_agent",
@@ -1129,6 +1223,19 @@ pub fn build_router(
             post(handlers::custom_skills::custom_delete_skills),
         )
         // ─── Office tools ───
+        // ─── Web-mode port bridge (dev servers on the host, shown in an iframe) ───
+        .route(
+            "/browser_bridge_status",
+            post(handlers::browser_bridge::browser_bridge_status),
+        )
+        .route(
+            "/browser_bridge_open",
+            post(handlers::browser_bridge::browser_bridge_open),
+        )
+        .route(
+            "/browser_bridge_close",
+            post(handlers::browser_bridge::browser_bridge_close),
+        )
         .route(
             "/officecli_detect",
             post(handlers::office_tools::officecli_detect),
@@ -1770,9 +1877,13 @@ pub fn build_router(
         },
     ));
 
-    // WebSocket route (auth via Sec-WebSocket-Protocol)
+    // WebSocket routes (auth via Sec-WebSocket-Protocol)
     let ws_route = Router::new()
         .route("/ws/events", get(ws::ws_handler))
+        .route(
+            crate::web::browser_tunnel::frame::TUNNEL_PATH,
+            get(crate::web::browser_tunnel::ws_handler),
+        )
         .layer(middleware::from_fn(move |req, next| {
             auth::require_token(req, next, token_for_ws.clone())
         }));
@@ -1823,11 +1934,20 @@ pub fn build_router(
         .layer(cors)
         .layer(Extension(state))
         .layer(Extension(shutdown_signal))
-        // Outermost: compress API JSON and static text assets. Allowlist
-        // predicate — binary downloads keep their exact Content-Length (the
-        // remote proxy's progress source) and SSE stays unbuffered; see
+        // Compress API JSON and static text assets. Allowlist predicate —
+        // binary downloads keep their exact Content-Length (the remote
+        // proxy's progress source) and SSE stays unbuffered; see
         // `web::compression`.
         .layer(crate::web::compression::compression_layer())
+        // Outermost, and outside everything above on purpose: a request
+        // addressed to a bridge hostname is a dev server's, not codeg's, and
+        // is answered by the bridge exactly as a listener of its own would —
+        // no CORS, no compression, no body limit, no static fallback. Only
+        // when `CODEG_BRIDGE_HOST_PATTERN` is set; every other request goes
+        // straight through. See `web::browser_bridge`.
+        .layer(middleware::from_fn(
+            crate::web::browser_bridge::route_by_host,
+        ))
 }
 
 async fn health_check() -> impl IntoResponse {

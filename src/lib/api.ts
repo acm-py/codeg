@@ -18,6 +18,8 @@ import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
 import type {
+  LeakedTempReclaim,
+  LeakedTempScan,
   AgentType,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
@@ -67,6 +69,7 @@ import type {
   PlanApprovalAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentLatestRelease,
   AgentDiagnosticsReport,
   GrokStructuredConfig,
   CodexSandboxStructuredConfig,
@@ -95,6 +98,8 @@ import type {
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasBoard,
+  CanvasBoardSummary,
   CanvasMutation,
   CanvasNode,
   CanvasNodeKind,
@@ -147,6 +152,9 @@ import type {
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
+  CloseRequestPayload,
+  CloseWindowBehavior,
+  SystemCloseBehaviorSettingsView,
   SystemRenderingSettings,
   SystemAutostartSettings,
   SystemTerminalSettings,
@@ -505,6 +513,21 @@ export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {
   return getTransport().call("acp_clear_binary_cache", { agentType })
 }
 
+/** Read-only scan of the system temp dir for pre-isolation launch leftovers. */
+export async function acpScanLeakedTemp(): Promise<LeakedTempScan> {
+  return getTransport().call("acp_scan_leaked_temp", {})
+}
+
+/**
+ * Delete leaked temp artifacts. The backend re-validates every path
+ * immediately before deleting — this list is never trusted as-is.
+ */
+export async function acpReclaimLeakedTemp(
+  paths: string[]
+): Promise<LeakedTempReclaim> {
+  return getTransport().call("acp_reclaim_leaked_temp", { paths })
+}
+
 export async function acpDownloadAgentBinary(
   agentType: AgentType,
   taskId: string,
@@ -532,6 +555,17 @@ export async function acpDetectAgentLocalVersion(
   agentType: AgentType
 ): Promise<string | null> {
   return getTransport().call("acp_detect_agent_local_version", { agentType })
+}
+
+/**
+ * The newest upstream release of an agent that is newer than codeg's pinned
+ * version and that Custom install can fetch; `null` when there is none. Hits
+ * npm or the ACP registry, so callers ask once per visit, not per render.
+ */
+export async function acpFetchAgentLatestRelease(
+  agentType: AgentType
+): Promise<AgentLatestRelease | null> {
+  return getTransport().call("acp_fetch_agent_latest_release", { agentType })
 }
 
 export async function acpPrepareNpxAgent(
@@ -815,6 +849,38 @@ export async function loadPiConfig(): Promise<{
   }[]
 }> {
   return getTransport().call("acp_load_pi_config", {})
+}
+
+/** One built-in model's thinking capability, as pi's own registry reports it. */
+export interface PiModelCapability {
+  provider: string
+  id: string
+  reasoning: boolean
+  thinkingLevelMap: Record<string, string | null>
+}
+
+/**
+ * Whether pi answered the catalog query, and if not, why — `models` is empty
+ * unless this is `ok`. An `ok` list covers only providers pi has credentials for.
+ */
+export type PiCatalogStatus =
+  | "ok"
+  | "not_found"
+  | "relative_path"
+  | "failed"
+  | "timed_out"
+
+export interface PiModelCatalog {
+  status: PiCatalogStatus
+  models: PiModelCapability[]
+}
+
+/**
+ * pi's built-in model catalog, asked of the configured pi runtime (offline — no
+ * session, no prompt, no network).
+ */
+export async function listPiModelCapabilities(): Promise<PiModelCatalog> {
+  return getTransport().call("acp_list_pi_model_capabilities", {})
 }
 
 /**
@@ -1827,6 +1893,49 @@ export async function updateSystemAutostartSettings(
   settings: SystemAutostartSettings
 ): Promise<SystemAutostartSettings> {
   return getTransport().call("update_system_autostart_settings", { settings })
+}
+
+// --- Close window behavior ---
+
+/**
+ * Emitted when a close press needs an answer. Addressed to `main`, but the
+ * Tauri transport subscribes with `EventTarget::Any`, so every webview sharing
+ * the root layout still receives it — `CloseRequestDialog` gates on the window
+ * label rather than trusting the target.
+ */
+export const CLOSE_REQUEST_EVENT = "app://close-request"
+
+export async function getSystemCloseBehaviorSettings(): Promise<SystemCloseBehaviorSettingsView> {
+  return getTransport().call("get_system_close_behavior_settings")
+}
+
+export async function updateSystemCloseBehaviorSettings(
+  behavior: CloseWindowBehavior
+): Promise<SystemCloseBehaviorSettingsView> {
+  return getTransport().call("update_system_close_behavior_settings", {
+    behavior,
+  })
+}
+
+/**
+ * Answer an open close prompt. The backend holds a "a prompt is up" flag that
+ * only this call clears, so every dismissal path — including Cancel and the
+ * Esc key — has to reach it or the close button goes dead for the session.
+ */
+export async function resolveCloseRequest(
+  action: "minimize" | "exit" | "cancel",
+  remember: boolean
+): Promise<void> {
+  return getTransport().call("resolve_close_request", { action, remember })
+}
+
+export async function listenCloseRequest(
+  handler: (payload: CloseRequestPayload) => void
+): Promise<() => void> {
+  return getTransport().subscribe<CloseRequestPayload>(
+    CLOSE_REQUEST_EVENT,
+    handler
+  )
 }
 
 // --- Logging ---
@@ -2963,15 +3072,67 @@ export interface GroupIntoRegionResult {
   deletedIds: number[]
 }
 
-/** The full canvas node set plus the revision it was read at. */
-export async function canvasListNodes(): Promise<CanvasSnapshot> {
-  return getTransport().call("canvas_list_nodes", {})
+/** Input for `canvasCreateBoard`. Every field optional — an unnamed board is
+ *  a real board, titled "Untitled canvas" by the client. */
+export interface CreateCanvasBoardInput {
+  name?: string
+  description?: string
+  color?: string
 }
 
+/** Field-by-field board patch: absent = untouched, empty string clears. */
+export interface CanvasBoardPatchInput {
+  name?: string
+  description?: string
+  color?: string
+}
+
+/** Every canvas, most recently edited first, each with its node count and a
+ *  thumbnail's worth of node footprints. */
+export async function canvasListBoards(): Promise<CanvasBoardSummary[]> {
+  return getTransport().call("canvas_list_boards", {})
+}
+
+export async function canvasCreateBoard(
+  input: CreateCanvasBoardInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_create_board", { input })
+}
+
+export async function canvasUpdateBoard(
+  boardId: number,
+  patch: CanvasBoardPatchInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_update_board", { boardId, patch })
+}
+
+/** Delete a board and everything on it (terminal cards' shells included). The
+ *  value is the ids of the nodes removed. Idempotent: a board already gone is a
+ *  success with an empty list. */
+export async function canvasDeleteBoard(
+  boardId: number
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_board", { boardId })
+}
+
+/** One board's node set plus the (global) revision it was read at. A board
+ *  that no longer exists rejects with `not_found`. */
+export async function canvasListNodes(
+  boardId: number
+): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", { boardId })
+}
+
+/** Place a node on a board. The board is its own argument rather than a field
+ *  of `input`: the node menus build the input without knowing which board
+ *  they are on, and the board view is what supplies it. */
 export async function canvasCreateNode(
+  boardId: number,
   input: CreateCanvasNodeInput
 ): Promise<CanvasMutation<CanvasNode>> {
-  return getTransport().call("canvas_create_node", { input })
+  return getTransport().call("canvas_create_node", {
+    input: { ...input, boardId },
+  })
 }
 
 /** "Collect these conversations into a region": the region write, its member
@@ -2979,9 +3140,12 @@ export async function canvasCreateNode(
  *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
  *  dozen events for one gesture and make every intermediate state observable. */
 export async function canvasGroupIntoRegion(
+  boardId: number,
   input: GroupIntoRegionInput
 ): Promise<CanvasMutation<GroupIntoRegionResult>> {
-  return getTransport().call("canvas_group_into_region", { input })
+  return getTransport().call("canvas_group_into_region", {
+    input: { ...input, boardId },
+  })
 }
 
 export async function canvasUpdateNode(
@@ -3094,6 +3258,8 @@ export type SettingsSection =
   | "experts"
   | "science"
   | "office-tools"
+  | "collaboration"
+  | "browser"
   | "version-control"
   | "shortcuts"
   | "system"
@@ -5024,6 +5190,11 @@ export type CodegMcpServiceState =
 export interface CodegMcpToolGroup {
   key: string
   enabled: boolean
+  /** The group this one lives inside, when it lives inside one
+   * (`browser_eval` inside `browser`). Sent by the backend so the two
+   * surfaces that render this list cannot disagree about which switch gates
+   * which. Absent for a group proper. */
+  requires?: string | null
 }
 
 /** Mirror of Rust `CodegMcpServiceStatus`. */
@@ -5146,6 +5317,32 @@ export async function setSessionInfoSettings(
   settings: SessionInfoSettings
 ): Promise<SessionInfoSettings> {
   return getTransport().call("set_session_info_settings", { settings })
+}
+
+// ─── Built-in browser tools settings ───────────────────────────────────────
+
+/** Mirror of Rust `BrowserToolsSettings` (default OFF). Whether agents get
+ *  `browser_list_tabs` / `browser_snapshot` at all; which individual page they
+ *  may read is a separate, per-tab decision made from the tab's own toolbar. */
+export interface BrowserToolsSettings {
+  enabled: boolean
+  /** Whether `browser_eval` exists: an agent running its own code on a shared
+   *  page. Off by default and separate from `enabled`, because everything else
+   *  in the group is a named act a person sharing a tab can picture and this
+   *  is not one of them. Never in force with `enabled` off — the backend drops
+   *  it, so a stale `true` cannot outlive the switch above it. Even on, every
+   *  individual snippet is shown to the person and approved on its own. */
+  eval: boolean
+}
+
+export async function getBrowserToolsSettings(): Promise<BrowserToolsSettings> {
+  return getTransport().call("get_browser_tools_settings")
+}
+
+export async function setBrowserToolsSettings(
+  settings: BrowserToolsSettings
+): Promise<BrowserToolsSettings> {
+  return getTransport().call("set_browser_tools_settings", { settings })
 }
 
 // ─── Create-from-chat (chat authoring) settings ────────────────────────────

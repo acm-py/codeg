@@ -14,6 +14,7 @@ import { CollapsibleUserMessage } from "./collapsible-user-message"
 import { CollapsibleSystemMessage } from "./collapsible-system-message"
 import {
   contextCompactionPayload,
+  contextCompactionSummary,
   isContextCompactionMeta,
 } from "@/lib/context-compaction"
 import {
@@ -25,11 +26,13 @@ import {
   type AdaptedContentPart,
   type AdaptedMessage,
   type MessageTurnAdapter,
+  type ToolCallState,
   type UserImageDisplay,
   type UserResourceDisplay,
 } from "@/lib/adapters/ai-elements-adapter"
 import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
+import { ModelLabelProvider } from "./model-label-context"
 import { ReplyArtifacts } from "./reply-artifacts"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
@@ -78,6 +81,8 @@ import {
 } from "@/components/message/conversation-message-nav"
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
+import { useModelLabels } from "@/hooks/use-model-labels"
+import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -208,6 +213,15 @@ export type ThreadRenderItem =
       key: string
       kind: "compaction"
       meta: Record<string, unknown> | null
+      /** The retained summary, when the backend claimed one for this call
+       *  (see `contextCompactionSummary`). */
+      summary?: string | null
+      /** The call's lifecycle, so a `/compact` still running reads as
+       *  compacting and its summary streams. */
+      state?: ToolCallState
+      /** The compaction call's id — the event's own name wherever the live
+       *  and history channels agree on one (see `dedupeCompactionItems`). */
+      callId?: string
     }
 
 /**
@@ -483,8 +497,11 @@ type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
  * Cache entry for one merged assistant run, keyed on the run's FIRST member
  * group. Valid only while every member's group reference and item key still
  * match: group identity flows through the per-turn adapter + group caches, so
- * member-group equality implies unchanged content AND sourceTurns, while the
- * keys embed phase/id/index so ordering or phase drift invalidates too. A run
+ * member-group equality implies unchanged content AND sourceTurns — the merged
+ * item FREEZES its members' `sourceTurns`, so any turn field the adapter's
+ * cache ignores would be stale here forever (`source_turn_id`, which the fork
+ * affordance reads, is in that tuple for exactly this reason). The keys embed
+ * phase/id/index so ordering or phase drift invalidates too. A run
  * containing the streaming turn misses every batch by construction (the
  * streaming turn re-adapts per batch) — that residual rebuild is the point;
  * purely historical runs hit and keep their group/parts/sourceTurns
@@ -512,16 +529,20 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
 
 /**
  * When a resolved group's ONLY meaningful content is a single context-compaction
- * tool-call part, return that part's `_meta` (so the caller can hoist it to a
- * standalone `"compaction"` divider item); otherwise `null`. Empty text parts are
- * ignored so a bare compaction turn still qualifies. Scoped to assistant groups
- * with no user resources/images. A compaction part always carries a truthy
- * `_meta` (`contextCompaction` as the boolean marker or the 1.3.0+ versioned
- * object), so a non-null return is unambiguous.
+ * tool-call part, return that part's `_meta`, retained summary and call id (so
+ * the caller can hoist it to a standalone `"compaction"` divider item);
+ * otherwise `null`. Empty text parts are ignored so a bare compaction turn
+ * still qualifies. Scoped to assistant groups with no user resources/images. A
+ * compaction part always carries a truthy `_meta` (`contextCompaction` as the
+ * boolean marker or the 1.3.0+ versioned object), so a non-null return is
+ * unambiguous.
  */
-function compactionOnlyMeta(
-  group: ResolvedMessageGroup
-): Record<string, unknown> | null {
+export function compactionOnlyPart(group: ResolvedMessageGroup): {
+  meta: Record<string, unknown> | null
+  summary: string | null
+  state: ToolCallState
+  callId: string
+} | null {
   if (group.role !== "assistant") return null
   if (group.resources.length > 0 || group.images.length > 0) return null
   const meaningful = group.parts.filter(
@@ -532,7 +553,12 @@ function compactionOnlyMeta(
   if (only.type !== "tool-call" || !isContextCompactionMeta(only.meta)) {
     return null
   }
-  return only.meta ?? null
+  return {
+    meta: only.meta ?? null,
+    summary: contextCompactionSummary(only.meta, only.output),
+    state: only.state,
+    callId: only.toolCallId,
+  }
 }
 
 /**
@@ -560,17 +586,24 @@ function compactionEventKey(
 /**
  * Drop repeat renderings of one compaction, keeping the first.
  *
- * A compaction reaches the timeline through two independent channels that no
- * id-keyed dedup can join: the live ACP `tool_call` (a `live-…` turn) and the
- * agent's own transcript, which `parsers::claude` turns into a divider under a
- * parser id. Mid-turn both are in hand at once — and unlike an ordinary
- * partial reply, the usual suppressor cannot help here, because the `/compact`
- * prompt is not persisted until AFTER the boundary, so the backend has no
+ * A compaction reaches the timeline through two independent channels: the live
+ * ACP `tool_call` (a `live-…` turn) and the agent's own transcript, which the
+ * history parsers turn into a divider under a parser turn id. Mid-turn both can
+ * be in hand at once — and unlike an ordinary partial reply, the usual
+ * suppressor cannot help here, because the `/compact` prompt is not persisted
+ * until AFTER the boundary (claude), or ever (codex), so the backend has no
  * in-flight user turn to anchor on (`apply_in_flight_message_id`).
  *
- * Content is therefore the only usable identity; see [`compactionEventKey`]
- * for why it is safe. Returns the input array when nothing is dropped, so the
- * common path allocates nothing.
+ * Two identities, either one enough:
+ * - the call id, where both channels name the event alike — codex-acp's live
+ *   `compactionId` is the app-server item id `parsers::codex` names its divider
+ *   by, and codex sends no counters for the content key to use;
+ * - the content, where they do not — claude's live id is its `compacting`
+ *   status message and its transcript's is the boundary record; see
+ *   [`compactionEventKey`] for why the content key is safe.
+ *
+ * Returns the input array when nothing is dropped, so the common path
+ * allocates nothing.
  */
 export function dedupeCompactionItems(
   items: ThreadRenderItem[]
@@ -579,14 +612,16 @@ export function dedupeCompactionItems(
   let dropped = false
   const kept = items.filter((item) => {
     if (item.kind !== "compaction") return true
-    const key = compactionEventKey(item.meta)
-    if (key === null) return true
-    if (seen.has(key)) {
-      dropped = true
-      return false
-    }
-    seen.add(key)
-    return true
+    const keys = [
+      compactionEventKey(item.meta),
+      item.callId ? `call:${item.callId}` : null,
+    ].filter((key): key is string => key !== null)
+    const repeat = keys.some((key) => seen.has(key))
+    // A repeat's other identity names the same event too, so it is recorded
+    // even though the item itself goes.
+    for (const key of keys) seen.add(key)
+    if (repeat) dropped = true
+    return !repeat
   })
   return dropped ? kept : items
 }
@@ -1046,6 +1081,10 @@ export function MessageListView({
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
+  const pageHandoffName = usePageHandoffName()
+  // Resolved once for the whole thread rather than per reply: the labels are a
+  // property of the agent, not of any one turn.
+  const modelLabel = useModelLabels(agentType)
   // Subscribe to only this conversation's session + derived timeline. Another
   // conversation's streaming token no longer re-renders this view; the timeline
   // selector returns a reference-stable array (memoized per session object) so
@@ -1069,10 +1108,23 @@ export function MessageListView({
   )
   const hasOlderTurns = isWindowedDetail(detail) && detail.turns_offset > 0
   const loadingOlderTurns = session?.loadingOlderTurns ?? false
-  const { loadOlderTurns } = useConversationRuntimeActions()
+  const { loadOlderTurns, refetchDetail } = useConversationRuntimeActions()
   const handleLoadOlder = useCallback(() => {
     loadOlderTurns(conversationId)
   }, [loadOlderTurns, conversationId])
+
+  // The agent ran a turn on its own and the wire content was dropped unrendered
+  // (see `pendingOutOfTurnContent`). Offer a re-read rather than doing one on a
+  // timer: the transcript's last write races the wire by single-digit
+  // milliseconds — the race that got the refetch-on-turn-complete patch
+  // reverted, see `completeTurn` in conversation-runtime-store — and a click
+  // lands far outside that window. `preserveLive` so a turn the user started in
+  // the meantime keeps streaming underneath. The flag clears on the response,
+  // so the pill doubles as its own progress indicator via `detailLoading`.
+  const pendingOutOfTurnContent = session?.pendingOutOfTurnContent ?? false
+  const handleLoadOutOfTurnContent = useCallback(() => {
+    refetchDetail(conversationId, { preserveLive: true })
+  }, [refetchDetail, conversationId])
 
   const shouldUseSmoothResize = !(
     isActive &&
@@ -1084,8 +1136,9 @@ export function MessageListView({
     () => ({
       attachedResources: sharedT("attachedResources"),
       toolCallFailed: sharedT("toolCallFailed"),
+      pageHandoffName,
     }),
-    [sharedT]
+    [sharedT, pageHandoffName]
   )
 
   const sessionSyncState = session?.syncState ?? "idle"
@@ -1169,9 +1222,16 @@ export function MessageListView({
       // Hoist a compaction-only turn to its own standalone divider item so it
       // renders BETWEEN turns instead of being merged into (and wedged inside)
       // the preceding assistant reply by `mergeConsecutiveAssistantTurns`.
-      const compactionMeta = compactionOnlyMeta(group)
-      if (compactionMeta !== null) {
-        return { key, kind: "compaction" as const, meta: compactionMeta }
+      const compaction = compactionOnlyPart(group)
+      if (compaction !== null) {
+        return {
+          key,
+          kind: "compaction" as const,
+          meta: compaction.meta,
+          summary: compaction.summary,
+          state: compaction.state,
+          callId: compaction.callId,
+        }
       }
       return {
         key,
@@ -1359,7 +1419,11 @@ export function MessageListView({
           // Chrome-less centered divider between turns (no avatar / stats footer).
           return (
             <div className="px-1 py-2">
-              <ContextCompactionCard meta={item.meta} />
+              <ContextCompactionCard
+                state={item.state}
+                meta={item.meta}
+                summary={item.summary}
+              />
             </div>
           )
         default:
@@ -1600,7 +1664,28 @@ export function MessageListView({
             prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
             prependScopeKey={conversationId}
           />
-          <MessageThreadScrollButton />
+          {/* Stacked, not overlapping: both pin to the thread's bottom centre,
+          so the scroll button steps up while the pill is showing. */}
+          <MessageThreadScrollButton
+            className={pendingOutOfTurnContent ? "bottom-16" : undefined}
+          />
+          {pendingOutOfTurnContent && (
+            <Button
+              className="absolute bottom-4 left-[50%] translate-x-[-50%] gap-1.5 rounded-full bg-background/90 shadow-sm hover:bg-muted/90"
+              disabled={detailLoading}
+              onClick={handleLoadOutOfTurnContent}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {detailLoading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              {t("loadBackgroundActivity")}
+            </Button>
+          )}
         </MessageThread>
         {liveMessage && connStatus === "prompting" && (
           <LiveTurnStats
@@ -1656,7 +1741,7 @@ export function MessageListView({
     <MarkdownImageProvider
       rootPath={imageRoot === undefined ? storedImageRoot : imageRoot}
     >
-      {thread}
+      <ModelLabelProvider value={modelLabel}>{thread}</ModelLabelProvider>
     </MarkdownImageProvider>
   )
 }

@@ -1,5 +1,11 @@
 "use client"
 
+import { BrowserEvalConfirm } from "@/components/browser/browser-eval-confirm"
+import { BrowserEventsBridge } from "@/components/browser/browser-events-bridge"
+import { BrowserScreenshotMarkupHost } from "@/components/browser/browser-screenshot-markup"
+import { BrowserServiceBridge } from "@/components/browser/browser-service-bridge"
+import { BrowserTabsPersistence } from "@/components/browser/browser-tabs-persistence"
+import { BrowserTabsSuspender } from "@/components/browser/browser-tabs-suspender"
 import {
   Suspense,
   useMemo,
@@ -421,9 +427,13 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                 {/* Pane activation lives on the CONTENT, not the top bar: clicking
                   edge chrome (terminal/settings/toggles) or grabbing a drag
                   region stays pane-neutral so it never hijacks close-tab /
-                  next-tab routing. Tabs self-activate via switchTab. */}
+                  next-tab routing. Tabs self-activate via switchTab. Neither
+                  handler fires for a click inside an iframe or a native page;
+                  `data-workspace-pane` is how ⌘W pressed there finds its pane
+                  (see `menu-close-shortcut`). */}
                 <div
                   className="relative flex-1 min-h-0 overflow-hidden"
+                  data-workspace-pane="conversation"
                   onPointerDownCapture={markConversationActive}
                   onFocusCapture={markConversationActive}
                 >
@@ -520,6 +530,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   the top bar (see the conversation section). */}
               <div
                 className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                data-workspace-pane="files"
                 onPointerDownCapture={markFileActive}
                 onFocusCapture={markFileActive}
               >
@@ -583,7 +594,10 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
           // Mobile mirrors the desktop chrome: no tab strip — the conversation
           // detail header (folder › title) renders inside {children}, and tabs
           // are navigated from the sidebar (single active conversation at a time).
-          <section className="flex h-full min-h-0 flex-col overflow-hidden">
+          <section
+            className="flex h-full min-h-0 flex-col overflow-hidden"
+            data-workspace-pane="conversation"
+          >
             <div className="relative flex-1 min-h-0 overflow-hidden">
               {children}
             </div>
@@ -591,7 +605,10 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
         ) : (
           // File view: the shared FileWorkspaceHeader (folder › file breadcrumb)
           // replaces the file tab strip, matching the desktop file column.
-          <section className="flex h-full min-h-0 flex-col overflow-hidden">
+          <section
+            className="flex h-full min-h-0 flex-col overflow-hidden"
+            data-workspace-pane="files"
+          >
             <FileWorkspaceHeader />
             <div className="flex-1 min-h-0 overflow-hidden">
               <FileWorkspacePanel />
@@ -1092,13 +1109,25 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
                 <WorkspaceContent>{children}</WorkspaceContent>
               </ResizablePanel>
 
+              {/* Closed, the handle gives up its BOX, not just its paint — and
+                  the override has to carry the same
+                  `data-[panel-group-direction=vertical]` prefix the base size
+                  does. A bare `h-0` is (0,1,0) against that rule's (0,2,0)
+                  attribute selector and tailwind-merge keeps both (different
+                  modifier sets), so it loses in silence: the closed terminal
+                  kept a 1px invisible strip of the app background between the
+                  workspace and the status bar, which reads as a gap under a
+                  browser page or an HTML preview (the only panes that paint to
+                  their own edge). The horizontal handles' `w-0` needs no
+                  prefix — their base `w-px` is unprefixed, so twMerge drops
+                  it. */}
               <ResizableHandle
                 withHandle
                 disabled={!terminalOpen}
                 className={
                   terminalOpen
                     ? ""
-                    : "pointer-events-none h-0 opacity-0 after:h-0"
+                    : "pointer-events-none opacity-0 data-[panel-group-direction=vertical]:h-0 data-[panel-group-direction=vertical]:after:h-0"
                 }
               />
 
@@ -1279,6 +1308,22 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                     <TabProvider>
                       <WorkspaceDocumentTitle />
                       <TabKeysSync />
+                      <BrowserEventsBridge />
+                      {/* Beside the events bridge and not inside it: that one
+                          stops where no built-in browser exists, and a local
+                          server is worth hearing about in web mode too (the
+                          port bridge can show it). */}
+                      <BrowserServiceBridge />
+                      {/* Mounted beside the bridge, not inside a tab: the tab
+                          an agent asks to run code on is usually not the one
+                          the person is looking at. */}
+                      <BrowserEvalConfirm />
+                      {/* Here and not in the browser tab it is opened from:
+                          only the tab on screen is mounted, and a tab opening
+                          on its own would take the marks with it. */}
+                      <BrowserScreenshotMarkupHost />
+                      <BrowserTabsPersistence />
+                      <BrowserTabsSuspender />
                       <HeavyPluginsWarmup />
                       <DeepLinkBootstrap />
                       <PetFocusBridge />

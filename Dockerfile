@@ -43,8 +43,8 @@ COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # never uses the compatible fallback binaries bundled by the npm packages.
 RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
-       @agentclientprotocol/claude-agent-acp@0.65.0 \
-       @agentclientprotocol/codex-acp@1.1.9
+       @agentclientprotocol/claude-agent-acp@0.84.0 \
+       @agentclientprotocol/codex-acp@2.0.1
 # libicu76: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-trixie-slim
 # bundles Node's own ICU statically and so does NOT install system libicu — without
@@ -80,6 +80,10 @@ ENV CODEG_RUNTIME=docker
 ENV CODEG_RESTART_DELAY_MS=2000
 
 EXPOSE 3080
+# Port bridge for dev servers (CODEG_BRIDGE_PORTS; default CODEG_PORT+1..+10).
+# Not needed when CODEG_BRIDGE_HOST_PATTERN names the dev servers by hostname
+# instead: those answer on 3080, and no range has to be guessed in advance.
+EXPOSE 3081-3090
 VOLUME /data
 
 # Run under the built-in supervisor (PID 1) so an in-place upgrade can swap

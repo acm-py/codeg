@@ -30,7 +30,27 @@ export type ClosedFileTab = {
   folderId: number | null
 }
 
-export type ClosedWorkspaceTab = ClosedConversationTab | ClosedFileTab
+export type ClosedBrowserTab = {
+  kind: "browser"
+  /** The closed tab's id. Identity for the repeat-push guard in `pushClosedTab`. */
+  key: string
+  /** See `ClosedConversationTab.index`. */
+  index: number
+  /** The page the tab showed when it was closed (not the one it opened with). */
+  url: string
+  title: string
+  folderId: number | null
+  /** The browser profile the tab lived in; it reopens in the same one. */
+  profile: string
+  /** An address on the remote codeg host (`BrowserTabSeed.remote`): it
+   *  reopens as one, never as a page of this computer. */
+  remote?: true
+}
+
+export type ClosedWorkspaceTab =
+  | ClosedConversationTab
+  | ClosedFileTab
+  | ClosedBrowserTab
 
 let stack: ClosedWorkspaceTab[] = []
 
@@ -160,5 +180,32 @@ export function snapshotFileTab(
     index,
     path: tab.path,
     folderId: tab.folderId,
+  }
+}
+
+/**
+ * A browser tab reopens at the page it was showing, which is the live URL
+ * the caller reads from the tab store — the record itself only knows the
+ * address the tab was opened with.
+ */
+export function snapshotBrowserTab(
+  tab: {
+    id: string
+    folderId: number | null
+    browser: { profile: string; remote?: true }
+  },
+  url: string,
+  title: string,
+  index: number
+): ClosedBrowserTab {
+  return {
+    kind: "browser",
+    key: tab.id,
+    index,
+    url,
+    title,
+    folderId: tab.folderId,
+    profile: tab.browser.profile,
+    ...(tab.browser.remote ? { remote: true as const } : {}),
   }
 }
