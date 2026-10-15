@@ -124,8 +124,8 @@ jobs:
       - name: Build server and ACP companion
         working-directory: src-tauri
         run: |
-          cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
-          cargo build --release --bin codeg-mcp --no-default-features --target ${{ matrix.target }}
+          cargo build --release --bin codeg-server --no-default-features --features server-bin --target ${{ matrix.target }}
+          cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin --target ${{ matrix.target }}
 
       - name: Package server artifact
         run: |

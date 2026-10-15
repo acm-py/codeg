@@ -17,8 +17,8 @@ COPY src-tauri/ ./
 # codeg-mcp is the stdio MCP companion the runtime injects per session
 # (see acp/delegation/companion.rs). It must ship next to codeg-server so
 # `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
-RUN cargo build --release --bin codeg-server --no-default-features \
- && cargo build --release --bin codeg-mcp --no-default-features
+RUN cargo build --release --bin codeg-server --no-default-features --features server-bin \
+ && cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin
 
 # Stage 3: Runtime
 FROM node:24-trixie-slim
@@ -43,8 +43,8 @@ COPY scripts/codeg-brew-path.sh /etc/profile.d/codeg-brew-path.sh
 # never uses the compatible fallback binaries bundled by the npm packages.
 RUN mkdir -p /opt/codeg/acp \
     && npm install --prefix /opt/codeg/acp --no-save --omit=dev --omit=optional \
-       @agentclientprotocol/claude-agent-acp@0.84.0 \
-       @agentclientprotocol/codex-acp@2.0.1
+       @agentclientprotocol/claude-agent-acp@0.90.0 \
+       @agentclientprotocol/codex-acp@2.2.2
 # libicu76: OfficeCLI ships as a self-contained binary with an embedded .NET
 # runtime, which requires the system ICU library at startup. node:*-trixie-slim
 # bundles Node's own ICU statically and so does NOT install system libicu — without

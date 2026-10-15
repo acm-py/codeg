@@ -97,7 +97,9 @@ import { presentSessionNotice, splitHeadline } from "@/lib/session-notices"
 import { presentPluginLoadFailures } from "@/lib/plugin-load-failures"
 import {
   acpErrorNotifiesDesktop,
+  isFailedTurnVerdict,
   isTurnFailureCode,
+  rejectedPromptText,
   routeAcpError,
   type AcpErrorLevel,
 } from "@/lib/acp-error-presentation"
@@ -124,10 +126,15 @@ import {
   withEventSoundsSuppressed,
 } from "@/lib/notification-sound"
 import {
+  requestWindowAttention,
+  withWindowAttentionSuppressed,
+} from "@/lib/window-attention"
+import {
   getSavedPrefsForConnect,
   saveModePreference,
   saveConfigPreference,
 } from "@/lib/selector-prefs-storage"
+import { rememberAdvertisedCommands } from "@/lib/advertised-commands-store"
 import { rememberModelLabels } from "@/lib/model-label-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
@@ -235,17 +242,20 @@ export type LiveContentBlock =
    * point in the stream where the user interrupted, so
    * `buildStreamingTurnsFromLiveMessage` can close the assistant turn here,
    * render the message as its own user turn, and start the reply to it as a
-   * new turn. Mirrors what the transcript projection already does with a
-   * mid-turn `user_message_chunk` (see `parsers/acp_native.rs`), so the live
-   * view and a reload agree. `id` is the feedback note id.
+   * new turn. Mirrors what a reload draws from the history — Claude Code's own
+   * transcript for the built-in agent (`parsers/claude.rs`), the transcript
+   * codeg writes for a custom one, where the steer is a marked prompt
+   * (`parsers/acp_native.rs`) — so the live view and a reload agree. `id` is
+   * the feedback note id.
    *
    * `createdAt` (ISO, the note's `created_at`) is taken before the backend
    * hands the text to the agent (`submit_feedback_native`), on the machine the
    * agent runs on — so it is directly comparable with, and earlier than, the
-   * timestamp the agent writes when it records this message in its own
-   * transcript. That ordering is what lets the runtime store tell the agent's
-   * copy of THIS message from the same words sent in an earlier round (see
-   * `suppressPersistedSteeredPrompts`), and it is the time the message shows.
+   * timestamp the history gives this message (the agent's own record, or
+   * codeg's once the agent took it in). That ordering is what lets the runtime
+   * store tell the history's copy of THIS message from the same words sent in
+   * an earlier round (see `suppressPersistedSteeredPrompts`), and it is the
+   * time the message shows.
    *
    * `blocks` is what the user actually sent, present only when the draft
    * carried more than plain text (image attachments). `text` alone cannot
@@ -262,6 +272,16 @@ export type LiveContentBlock =
       createdAt: string
       blocks?: ContentBlock[] | null
     }
+  /**
+   * The turn FAILED: the adapter's typed terminal record, the prompt the agent
+   * rejected, or codeg's verdict that nothing came back. Not agent output:
+   * like a steer it closes the reply, and it renders as a `system` turn of its
+   * own holding a `turn_error` block — what a reload draws from the agent's
+   * own record of the failure (`parsers::turn_error_message`). At most one per
+   * turn (see `TURN_FAILED`); `fromAgent` is whether `message` is the agent's
+   * own words rather than codeg's verdict.
+   */
+  | { type: "turn_error"; message: string; fromAgent: boolean }
 
 export interface LiveMessage {
   id: string
@@ -703,6 +723,13 @@ type Action =
       /** What the user sent, when it was more than plain text — see the
        *  `steering` block. Absent for a text-only steer. */
       blocks?: ContentBlock[] | null
+    }
+  | {
+      type: "TURN_FAILED"
+      contextKey: string
+      message: string
+      /** The agent's own words, as opposed to codeg's verdict. */
+      fromAgent: boolean
     }
   | {
       type: "CLAUDE_API_RETRY"
@@ -2798,7 +2825,8 @@ function connectionsReducer(
       // there is no running turn to split, and appending would graft the
       // message onto the PREVIOUS turn's completed liveMessage. The note keeps
       // its strip in that case (it is absent from `steeredMessageIds`), and
-      // the agent recorded it either way, so a reload still shows it.
+      // the history holds it either way (see the `steering` block), so a
+      // reload still shows it.
       if (conn.status !== "prompting") return state
       // Idempotent by note id: the submit broadcast reaches every attached
       // client, and one client is also the sender.
@@ -2821,6 +2849,47 @@ function connectionsReducer(
           ],
         },
         steeredMessageIds: [...conn.steeredMessageIds, action.id],
+      })
+      return next
+    }
+
+    case "TURN_FAILED": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      // Same out-of-turn guard as STEERING_MESSAGE: with no running turn there
+      // is nothing to close, and appending would graft the line onto the
+      // PREVIOUS turn's completed liveMessage.
+      if (conn.status !== "prompting") return state
+      const message = action.message.trim()
+      if (!message) return state
+      const prev = ensureLiveMessage(conn.liveMessage)
+      const current = prev.content.find((block) => block.type === "turn_error")
+      // One account per turn. The agent's own words win over codeg's verdict
+      // whichever arrives first; otherwise the later account replaces the
+      // earlier (a revised record), and a replay changes nothing.
+      if (current) {
+        if (current.fromAgent && !action.fromAgent) return state
+        if (
+          current.message === message &&
+          current.fromAgent === action.fromAgent
+        ) {
+          return state
+        }
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        liveMessage: {
+          ...prev,
+          content: [
+            ...prev.content.filter((block) => block.type !== "turn_error"),
+            {
+              type: "turn_error" as const,
+              message,
+              fromAgent: action.fromAgent,
+            },
+          ],
+        },
       })
       return next
     }
@@ -3875,6 +3944,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         sink(nextConn.liveMessage, nextConn.status === "prompting")
       }
 
+      // A list the connection now advertises is also what its folder's
+      // transcripts badge until the next connection there advertises (see
+      // `advertised-commands-store`). Read off the reducer's result like the
+      // rest of this block, so the live `available_commands` event and a
+      // snapshot carrying the list are one path. Filed under the connection's
+      // OWN agent and cwd, never a tab's selection, which can lag an agent
+      // switch and would file one agent's commands under another.
+      const rememberCommands = (key: string) => {
+        const nextConn = next.get(key)
+        if (!nextConn?.availableCommands) return
+        if (nextConn.availableCommands === prev.get(key)?.availableCommands) {
+          return
+        }
+        rememberAdvertisedCommands(
+          nextConn.agentType,
+          nextConn.workingDir,
+          nextConn.availableCommands
+        )
+      }
+
       if (action.type === "REMOVE_ALL") {
         notifyAllKeyListeners()
       } else if (action.type === "STREAM_BATCH") {
@@ -3900,6 +3989,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         if (key) {
           mirrorLiveMessage(key)
           notifyKeyListeners(key)
+          rememberCommands(key)
         }
       }
     },
@@ -4781,10 +4871,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               created_at: new Date().toISOString(),
             },
           })
-          // A blocked agent is exactly what a notification is for, and this
-          // was the one such state that never raised one — the sound path had
-          // covered it since it shipped. Body names the agent only: the
-          // question text is the agent's own prose.
+          // A blocked agent is exactly what a notification is for — the sound
+          // path had covered this one since it shipped. Body names the agent
+          // only: the question text is the agent's own prose.
           {
             const nc = quiet
               ? null
@@ -4798,6 +4887,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   }),
                 })
               )
+              void requestWindowAttention("question_request")
             }
           }
           break
@@ -4825,6 +4915,27 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               created_at: new Date().toISOString(),
             },
           })
+          // Blocked on the user's sign-off exactly like a permission prompt —
+          // which is what Claude Code's own ExitPlanMode arrives as — so it
+          // asks under that event's switches rather than a row of its own,
+          // and every plan approval reads the same whichever agent raised it.
+          // Body names the agent only: the plan is the agent's own prose.
+          {
+            const nc = quiet
+              ? null
+              : storeRef.current.connections.get(contextKey)
+            if (nc) {
+              void notifyDesktop(
+                "permission_request",
+                sessionNotification(contextKey, {
+                  body: t("notificationPlanApproval", {
+                    agent: getAgentLabel(nc.agentType),
+                  }),
+                })
+              )
+              void requestWindowAttention("permission_request")
+            }
+          }
           break
         case "plan_approval_resolved":
           // The approval was answered (this or another window) or canceled.
@@ -4927,6 +5038,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                       : many,
                 })
               )
+              void requestWindowAttention("background_task")
             }
             // 4. flip each async sub-agent's launch card to its terminal
             //    (completed + result) state IN-MEMORY, by rewriting the
@@ -4935,10 +5047,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             //    deliberately replaces the `refetchDetail` this used to do: that
             //    refetch re-parsed the still-open transcript mid-#870-hold,
             //    double-rendering the held turn AND racing the file's last
-            //    write. Entries with
-            //    no `tool_use_id` (background shells) have no marker card and are
-            //    skipped. The store queues a settlement whose launch turn hasn't
-            //    promoted yet and applies it at COMPLETE_TURN.
+            //    write. A background shell's notification names its `Bash` call
+            //    too, and the store leaves that command card as it is (see
+            //    `applyBackgroundSettlementToTurns`); entries with no
+            //    `tool_use_id` (an MCP call moved to the background) are
+            //    skipped. The store queues a settlement whose launch turn
+            //    hasn't promoted yet and applies it at COMPLETE_TURN.
             const conversationId = getConversationIdByExternalIdFromStore(
               e.session_id
             )
@@ -4988,6 +5102,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   body: `${agentLabel}: ${tChat("permissionDialog.subtitle")}`,
                 })
               )
+              void requestWindowAttention("permission_request")
             }
           }
           break
@@ -5177,8 +5292,25 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey,
             record: e.record,
           })
-          if (quiet || !failureConn) break
           const noticeKind = sessionFailureNotice(stored, e.record)
+          // A turn that failed closes on the adapter's own account of it — the
+          // record's title, which its transcript keeps too — as the failure
+          // line (see `TURN_FAILED`). Store state, so even when `quiet`.
+          if (noticeKind === "terminal") {
+            // Text still queued for the next streaming flush belongs to the
+            // reply this line closes, so it lands first.
+            flushStreamingQueue(contextKey)
+            const own = e.record.title.trim()
+            dispatch({
+              type: "TURN_FAILED",
+              contextKey,
+              message:
+                own ||
+                tFailure(sessionFailureCategoryLabelKey(e.record.category)),
+              fromAgent: own.length > 0,
+            })
+          }
+          if (quiet || !failureConn) break
           if (noticeKind === null) break
           const connKey = failureConn.connectionId
           // Adapter-authored English, shown verbatim like a notice's text —
@@ -5411,6 +5543,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                     }),
                   })
                 )
+                void requestWindowAttention("error")
               } else {
                 void notifyDesktop(
                   "turn_complete",
@@ -5418,6 +5551,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                     body: t("notificationTurnComplete", { agent: agentLabel }),
                   })
                 )
+                void requestWindowAttention("turn_complete")
               }
             }
           }
@@ -5435,6 +5569,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             e.details,
             agentLabel
           )
+
+          // A verdict that the turn FAILED, or a prompt the agent rejected (no
+          // code: the message is the agent's own), closes the turn with the
+          // failure line (see `TURN_FAILED`). Store state, so even when
+          // `quiet`; outside a turn the reducer ignores it.
+          if (isFailedTurnVerdict(e.code)) {
+            dispatch({
+              type: "TURN_FAILED",
+              contextKey,
+              message: text,
+              fromAgent: false,
+            })
+          } else if (!e.code) {
+            dispatch({
+              type: "TURN_FAILED",
+              contextKey,
+              message: rejectedPromptText(e.message),
+              fromAgent: true,
+            })
+          }
 
           // Already shown by a transcript card (a failed compaction): the
           // event exists for the chat-channel bridges and the pet, not for us.
@@ -5469,6 +5623,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 }),
               })
             )
+            void requestWindowAttention("error")
           }
           if (quiet) break
           const connKey = nc?.connectionId ?? contextKey
@@ -5542,7 +5697,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           flushStreamingQueue(contextKey)
           // Localize via the stable `code` field ("resource_not_found" —
           // JSON-RPC -32002 — plus "session_unavailable" and
-          // "session_archived", both matched on the wire message). Fall back
+          // "session_archived", both matched on the wire message, and
+          // "session_busy", read from codex-acp's typed error reason). Fall back
           // to the raw agent message so an unknown future code still surfaces
           // something intelligible rather than getting swallowed.
           const nc = storeRef.current.connections.get(contextKey)
@@ -5588,7 +5744,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 })
               // Unlike its neighbours this one is temporary and self-clearing,
               // so the message says what holds the session rather than what
-              // went wrong: the fork took the lock, closing it gives it back.
+              // went wrong, and what frees it. Two things can hold it: another
+              // Codex client with the same session open (the app, the CLI or an
+              // IDE extension), where freeing it can take quitting that client
+              // because closing its tab does not always unload the thread; or
+              // a fork codeg just made from it, which closes the parent and
+              // leaves codex to unload it about a minute later.
               case "session_busy":
                 return t("backendErrors.sessionLoadBusy", {
                   agent: agentLabel,
@@ -5846,15 +6007,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // must not fire a burst of cues for turns that finished minutes ago.
           // Doubly true of OS notifications, which unlike a tone stay in the
           // notification centre until the user clears them by hand — and of
-          // toasts, which would re-announce every notice of the gap at once.
+          // toasts, which would re-announce every notice of the gap at once,
+          // and of a taskbar flash for a prompt that was answered long ago.
           envelopeEffectsMutedRef.current += 1
           try {
             withEventSoundsSuppressed(() =>
-              withDesktopNotificationsSuppressed(() => {
-                for (const envelope of events) {
-                  applyMappedEnvelope(contextKey, envelope)
-                }
-              })
+              withDesktopNotificationsSuppressed(() =>
+                withWindowAttentionSuppressed(() => {
+                  for (const envelope of events) {
+                    applyMappedEnvelope(contextKey, envelope)
+                  }
+                })
+              )
             )
           } finally {
             envelopeEffectsMutedRef.current -= 1
